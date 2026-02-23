@@ -1,0 +1,24 @@
+[defaults]
+# Możesz ustawić wartości domyślne tutaj (opcjonalne)
+# host = imap.example.com
+# user = user@example.com
+# ssl = true
+# limit = 5
+# forward_to = yourname@gmail.com         ; używane przez gmfw.py (SMTP)
+# smtp_host = smtp.example.com            ; SMTP serwera macierzystego (gmfw.py, domyślnie = host)
+# smtp_port = 587
+# smtp_ssl = true
+# gmail_user = yourname@gmail.com         ; używane przez gmfwi.py (IMAP APPEND)
+# gmail_folder = INBOX                    ; folder na Gmail (domyślnie INBOX)
+
+# HASŁA:
+# Hasła są przechowywane bezpiecznie w keyring systemu (Windows Credential Manager, Linux Secret Service, macOS Keychain).
+# Użyj flag --store-password i --store-gmail-password aby zapisać hasła.
+
+[work]
+host = imap.work.example.com
+user = workuser@example.com
+# port = 143
+ssl = false
+limit = 5
+# gmail_user = yourname@gmail.com
