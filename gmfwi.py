@@ -165,7 +165,10 @@ def parse_filters_from_config(filter_str: str) -> List[dict]:
 	"""
 	filters = []
 	if not filter_str:
+		logger.info("Brak zdefiniowanych filtrów")
 		return filters
+	
+	logger.info("Parsowanie filtrów z config: '%s'", filter_str[:100])
 	
 	for line in filter_str.strip().split('\n'):
 		line = line.strip()
@@ -183,7 +186,7 @@ def parse_filters_from_config(filter_str: str) -> List[dict]:
 				'labels': labels,
 				'never_spam': never_spam
 			})
-			logger.debug("Załadowano filtr: %s zawiera '%s' -> etykiety: %s, never_spam: %s", field, value, labels, never_spam)
+			logger.info("  ✓ Filtr: [%s] zawiera '%s' → etykiety: %s, never_spam: %s", field, value, labels, never_spam)
 	return filters
 
 
@@ -193,10 +196,19 @@ def check_message_against_filters(raw_message: bytes, filters: List[dict]) -> tu
 	never_spam = False
 	
 	if not filters:
+		logger.debug("Brak filtrów do sprawdzenia")
 		return ([], False)
 	
 	try:
 		msg = BytesParser(policy=policy.default).parsebytes(raw_message)
+		msg_to = msg.get('To', '')
+		msg_from = msg.get('From', '')
+		msg_subject = msg.get('Subject', '')
+		
+		logger.info("Sprawdzanie filtrów dla wiadomości:")
+		logger.info("  To: %s", msg_to)
+		logger.info("  From: %s", msg_from)
+		logger.info("  Subject: %s", msg_subject)
 		
 		for filter_rule in filters:
 			field = filter_rule['field']
@@ -204,19 +216,28 @@ def check_message_against_filters(raw_message: bytes, filters: List[dict]) -> tu
 			
 			# Pobierz wartość pola z wiadomości
 			if field == 'to':
-				header_value = msg.get('To', '').lower()
+				header_value = msg_to.lower()
 			elif field == 'from':
-				header_value = msg.get('From', '').lower()
+				header_value = msg_from.lower()
 			elif field == 'subject':
-				header_value = msg.get('Subject', '').lower()
+				header_value = msg_subject.lower()
 			else:
 				continue
+			
+			logger.info("  Sprawdzanie: czy [%s]='%s' zawiera '%s'?", field, header_value[:50], value)
 			
 			# Sprawdź czy pasuje
 			if value in header_value:
 				labels_to_apply.update(filter_rule['labels'])
 				never_spam = never_spam or filter_rule['never_spam']
-				logger.debug("Filtr dopasowany: %s zawiera '%s'", field, value)
+				logger.info("  ✓ DOPASOWANO! Dodaję etykiety: %s, never_spam: %s", filter_rule['labels'], filter_rule['never_spam'])
+			else:
+				logger.info("  ✗ Nie pasuje")
+		
+		if labels_to_apply or never_spam:
+			logger.info("Wynik sprawdzania: etykiety=%s, never_spam=%s", list(labels_to_apply), never_spam)
+		else:
+			logger.info("Żaden filtr nie pasuje do tej wiadomości")
 		
 		return (list(labels_to_apply), never_spam)
 	except Exception:
@@ -259,23 +280,30 @@ def apply_gmail_labels(gmail_server: IMAP4_SSL, message_id: str, labels: List[st
 				pass
 		
 		if not uid:
-			logger.warning("Nie znaleziono wiadomości na Gmail (Message-ID: %s)", message_id)
+			logger.warning("❌ Nie znaleziono wiadomości na Gmail (Message-ID: %s)", message_id)
 			return False
+		
+		logger.info("✓ Znaleziono wiadomość na Gmail (UID: %s, Message-ID: %s)", uid, message_id)
 		
 		# Dodaj etykiety
 		if labels:
 			labels_str = ' '.join([f'"{label}"' for label in labels])
-			resp, _ = gmail_server.uid('STORE', uid, '+X-GM-LABELS', f'({labels_str})')
+			logger.info("Aplikowanie etykiet: %s", labels)
+			logger.debug("  Komenda: UID STORE %s +X-GM-LABELS (%s)", uid, labels_str)
+			resp, data = gmail_server.uid('STORE', uid, '+X-GM-LABELS', f'({labels_str})')
+			logger.debug("  Odpowiedź: %s, data: %s", resp, data)
 			if resp == "OK":
-				logger.info("Dodano etykiety %s do wiadomości %s", labels, message_id)
+				logger.info("✓ Dodano etykiety %s do wiadomości", labels)
 			else:
-				logger.warning("Nie udało się dodać etykiet: %s", resp)
+				logger.warning("❌ Nie udało się dodać etykiet: %s", resp)
 		
 		# Usuń ze SPAM jeśli trzeba
 		if remove_from_spam:
-			resp, _ = gmail_server.uid('STORE', uid, '-X-GM-LABELS', '("\\\\Spam")')
+			logger.info("Usuwanie wiadomości z SPAM...")
+			resp, data = gmail_server.uid('STORE', uid, '-X-GM-LABELS', '("\\\\Spam")')
+			logger.debug("  Odpowiedź: %s, data: %s", resp, data)
 			if resp == "OK":
-				logger.info("Usunięto wiadomość %s z SPAM", message_id)
+				logger.info("✓ Usunięto wiadomość z SPAM")
 			else:
 				logger.debug("Nie udało się usunąć z SPAM (prawdopodobnie nie była w SPAM): %s", resp)
 		
@@ -554,6 +582,9 @@ def _run_autoforward(source: IMAP4, gmail: IMAP4_SSL, acc: dict, folder: str) ->
 
 	for uid in uid_list:
 		try:
+			logger.info("[%s] " + "="*60, name)
+			logger.info("[%s] Przetwarzanie wiadomości UID=%s", name, uid)
+			
 			raw = fetch_full_message(source, uid, folder)
 			if not raw:
 				logger.warning("[%s] Nie udało się pobrać wiadomości UID=%s", name, uid)
@@ -566,16 +597,20 @@ def _run_autoforward(source: IMAP4, gmail: IMAP4_SSL, acc: dict, folder: str) ->
 			success, message_id = append_to_gmail(raw, gmail, gmail_folder, mark_as_seen=False)
 			
 			if success:
+				logger.info("[%s] ✓ Wiadomość skopiowana na Gmail (Message-ID: %s)", name, message_id[:30] + "..." if len(message_id) > 30 else message_id)
 				# Aplikuj etykiety jeśli są filtry
 				if labels or never_spam:
+					logger.info("[%s] Aplikowanie filtrów: etykiety=%s, never_spam=%s", name, labels, never_spam)
 					apply_gmail_labels(gmail, message_id, labels, never_spam)
+				else:
+					logger.info("[%s] Brak etykiet do zastosowania", name)
 				
 				if move_to_trash(source, uid, folder):
-					logger.info("[%s] Wiadomość UID=%s skopiowana na Gmail i przeniesiona do Trash.", name, uid)
+					logger.info("[%s] ✓ Wiadomość UID=%s przeniesiona do Trash", name, uid)
 				else:
-					logger.warning("[%s] Wiadomość UID=%s skopiowana na Gmail, ale przeniesienie do Trash nie powiodło się.", name, uid)
+					logger.warning("[%s] ✗ Nie udało się przenieść wiadomości UID=%s do Trash", name, uid)
 			else:
-				logger.warning("[%s] Nie udało się skopiować wiadomości UID=%s na Gmail.", name, uid)
+				logger.warning("[%s] ✗ Nie udało się skopiować wiadomości UID=%s na Gmail", name, uid)
 		except Exception:
 			logger.exception("[%s] Błąd przy przetwarzaniu wiadomości UID=%s", name, uid)
 
