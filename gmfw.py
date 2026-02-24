@@ -10,6 +10,8 @@ Funkcjonalność w tym pliku:
 Uruchom: python gmfw.py --config config.ini --account kuj4 --autoforward
 """
 
+# OBSOLETE
+
 from __future__ import annotations
 
 import argparse
