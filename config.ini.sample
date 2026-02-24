@@ -22,3 +22,16 @@ user = workuser@example.com
 ssl = false
 limit = 5
 # gmail_user = yourname@gmail.com
+# gmail_folder = INBOX
+
+# FILTRY (działa tylko w gmfwi.py):
+# Format: field:value:label1,label2:never_spam
+# - field: to, from, subject
+# - value: tekst do wyszukania (case-insensitive)
+# - label1,label2: lista etykiet oddzielonych przecinkiem
+# - never_spam: true/false - czy usunąć wiadomość z SPAM
+# Każdy filtr w nowej linii
+# filters = 
+#     to:kuj4@o2.pl:kuj4@o2.pl:true
+#     from:important@company.com:Ważne:true
+#     subject:Invoice:Faktury:false

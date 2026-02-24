@@ -157,10 +157,144 @@ def connect_gmail(gmail_user: str, gmail_password: str, timeout: int = 10) -> IM
 	return server
 
 
-def append_to_gmail(raw_message: bytes, gmail_server: IMAP4_SSL, gmail_folder: str = "INBOX") -> bool:
-	"""Kopiuje wiadomość na Gmail przez IMAP APPEND z zachowaniem oryginalnej daty."""
+def parse_filters_from_config(filter_str: str) -> List[dict]:
+	"""Parsuje filtry z config.ini.
+	
+	Format: field:value:label1,label2:never_spam
+	Przykład: to:kuj4@o2.pl:kuj4@o2.pl:true
+	"""
+	filters = []
+	if not filter_str:
+		return filters
+	
+	for line in filter_str.strip().split('\n'):
+		line = line.strip()
+		if not line or line.startswith('#'):
+			continue
+		parts = line.split(':')
+		if len(parts) >= 3:
+			field = parts[0].strip().lower()
+			value = parts[1].strip()
+			labels = [l.strip() for l in parts[2].split(',') if l.strip()]
+			never_spam = parts[3].strip().lower() == 'true' if len(parts) > 3 else False
+			filters.append({
+				'field': field,
+				'value': value,
+				'labels': labels,
+				'never_spam': never_spam
+			})
+			logger.debug("Załadowano filtr: %s zawiera '%s' -> etykiety: %s, never_spam: %s", field, value, labels, never_spam)
+	return filters
+
+
+def check_message_against_filters(raw_message: bytes, filters: List[dict]) -> tuple[List[str], bool]:
+	"""Sprawdza wiadomość względem filtrów i zwraca (etykiety, never_spam)."""
+	labels_to_apply = set()
+	never_spam = False
+	
+	if not filters:
+		return ([], False)
+	
 	try:
 		msg = BytesParser(policy=policy.default).parsebytes(raw_message)
+		
+		for filter_rule in filters:
+			field = filter_rule['field']
+			value = filter_rule['value'].lower()
+			
+			# Pobierz wartość pola z wiadomości
+			if field == 'to':
+				header_value = msg.get('To', '').lower()
+			elif field == 'from':
+				header_value = msg.get('From', '').lower()
+			elif field == 'subject':
+				header_value = msg.get('Subject', '').lower()
+			else:
+				continue
+			
+			# Sprawdź czy pasuje
+			if value in header_value:
+				labels_to_apply.update(filter_rule['labels'])
+				never_spam = never_spam or filter_rule['never_spam']
+				logger.debug("Filtr dopasowany: %s zawiera '%s'", field, value)
+		
+		return (list(labels_to_apply), never_spam)
+	except Exception:
+		logger.exception("Błąd podczas sprawdzania filtrów")
+		return ([], False)
+
+
+def apply_gmail_labels(gmail_server: IMAP4_SSL, message_id: str, labels: List[str], 
+                       remove_from_spam: bool = False) -> bool:
+	"""Znajduje wiadomość po Message-ID i aplikuje etykiety Gmail przez X-GM-LABELS."""
+	import time
+	
+	if not message_id:
+		logger.warning("Brak Message-ID, nie można zastosować etykiet")
+		return False
+	
+	try:
+		# Gmail potrzebuje chwili po APPEND zanim wiadomość będzie widoczna przez SEARCH
+		uid = None
+		for attempt in range(5):
+			if attempt > 0:
+				time.sleep(1)
+			
+			# Szukaj w INBOX
+			gmail_server.select("INBOX")
+			resp, data = gmail_server.uid('SEARCH', None, f'HEADER Message-ID "{message_id}"')
+			
+			if resp == "OK" and data[0]:
+				uid = data[0].split()[-1]  # ostatni UID (najnowszy)
+				break
+			
+			# Spróbuj też w [Gmail]/All Mail
+			try:
+				gmail_server.select("[Gmail]/All Mail")
+				resp, data = gmail_server.uid('SEARCH', None, f'HEADER Message-ID "{message_id}"')
+				if resp == "OK" and data[0]:
+					uid = data[0].split()[-1]
+					break
+			except Exception:
+				pass
+		
+		if not uid:
+			logger.warning("Nie znaleziono wiadomości na Gmail (Message-ID: %s)", message_id)
+			return False
+		
+		# Dodaj etykiety
+		if labels:
+			labels_str = ' '.join([f'"{label}"' for label in labels])
+			resp, _ = gmail_server.uid('STORE', uid, '+X-GM-LABELS', f'({labels_str})')
+			if resp == "OK":
+				logger.info("Dodano etykiety %s do wiadomości %s", labels, message_id)
+			else:
+				logger.warning("Nie udało się dodać etykiet: %s", resp)
+		
+		# Usuń ze SPAM jeśli trzeba
+		if remove_from_spam:
+			resp, _ = gmail_server.uid('STORE', uid, '-X-GM-LABELS', '("\\\\Spam")')
+			if resp == "OK":
+				logger.info("Usunięto wiadomość %s z SPAM", message_id)
+			else:
+				logger.debug("Nie udało się usunąć z SPAM (prawdopodobnie nie była w SPAM): %s", resp)
+		
+		return True
+	except Exception:
+		logger.exception("Błąd podczas aplikowania etykiet")
+		return False
+
+
+def append_to_gmail(raw_message: bytes, gmail_server: IMAP4_SSL, gmail_folder: str = "INBOX", 
+                    mark_as_seen: bool = False) -> tuple[bool, str]:
+	"""Kopiuje wiadomość na Gmail przez IMAP APPEND z zachowaniem oryginalnej daty.
+	
+	Zwraca tuple: (sukces, message_id)
+	"""
+	try:
+		msg = BytesParser(policy=policy.default).parsebytes(raw_message)
+		message_id = msg.get("Message-ID", "").strip('<>')
+		
 		date_str = msg.get("Date", "")
 		internal_date = None
 		if date_str:
@@ -170,15 +304,18 @@ def append_to_gmail(raw_message: bytes, gmail_server: IMAP4_SSL, gmail_folder: s
 			except Exception:
 				logger.debug("Nie udało się sparsować daty '%s', użyję bieżącego czasu", date_str)
 
-		resp, _ = gmail_server.append(gmail_folder, None, internal_date, raw_message)
+		# Flagi - domyślnie NIE oznaczaj jako przeczytane (większa szansa że Gmail zauważy)
+		flags = "(\\Seen)" if mark_as_seen else None
+		
+		resp, _ = gmail_server.append(gmail_folder, flags, internal_date, raw_message)
 		if resp == "OK":
 			logger.debug("Wiadomość skopiowana na Gmail (%s)", gmail_folder)
-			return True
+			return (True, message_id)
 		logger.warning("Gmail APPEND zwróciło: %s", resp)
-		return False
+		return (False, message_id)
 	except Exception:
 		logger.exception("Błąd podczas kopiowania wiadomości na Gmail")
-		return False
+		return (False, "")
 
 
 # ---------------------------------------------------------------------------
@@ -221,6 +358,8 @@ def load_accounts(config_path: str) -> List[dict]:
 		if not gmail_user:
 			logger.warning("Pominięto sekcję %s — brak gmail_user", section)
 			continue
+		filters_str = sec.get("filters", fallback=defaults.get("filters", ""))
+		
 		accounts.append({
 			"name": section,
 			"host": host,
@@ -231,6 +370,7 @@ def load_accounts(config_path: str) -> List[dict]:
 			"limit": sec.getint("limit", fallback=10),
 			"gmail_user": gmail_user,
 			"gmail_folder": sec.get("gmail_folder", fallback=defaults.get("gmail_folder", "INBOX")),
+			"filters": filters_str,
 		})
 	return accounts
 
@@ -405,9 +545,12 @@ def main() -> None:
 def _run_autoforward(source: IMAP4, gmail: IMAP4_SSL, acc: dict, folder: str) -> None:
 	name = acc["name"]
 	gmail_folder = acc["gmail_folder"]
+	filters = parse_filters_from_config(acc.get("filters", ""))
 
 	uid_list = get_uid_list(source, folder)
 	logger.info("[%s] Wiadomości do skopiowania na Gmail: %d", name, len(uid_list))
+	if filters:
+		logger.info("[%s] Załadowano %d filtrów", name, len(filters))
 
 	for uid in uid_list:
 		try:
@@ -415,7 +558,18 @@ def _run_autoforward(source: IMAP4, gmail: IMAP4_SSL, acc: dict, folder: str) ->
 			if not raw:
 				logger.warning("[%s] Nie udało się pobrać wiadomości UID=%s", name, uid)
 				continue
-			if append_to_gmail(raw, gmail, gmail_folder):
+			
+			# Sprawdź filtry przed skopiowaniem
+			labels, never_spam = check_message_against_filters(raw, filters)
+			
+			# Kopiuj na Gmail (zwraca tuple: sukces, message_id)
+			success, message_id = append_to_gmail(raw, gmail, gmail_folder, mark_as_seen=False)
+			
+			if success:
+				# Aplikuj etykiety jeśli są filtry
+				if labels or never_spam:
+					apply_gmail_labels(gmail, message_id, labels, never_spam)
+				
 				if move_to_trash(source, uid, folder):
 					logger.info("[%s] Wiadomość UID=%s skopiowana na Gmail i przeniesiona do Trash.", name, uid)
 				else:
