@@ -33,6 +33,8 @@ limit = 5
 # wiadomość zostanie przeniesiona do Trash na serwerze źródłowym i NIE trafi na Gmail.
 # Ścieżka może być względna (względem katalogu config.ini) lub bezwzględna.
 # spam_keywords_file = spam_keywords.txt
+# spam_folder = Junk   ; folder na źródle dla wiadomości odfiltrowanych przez spam_keywords_file
+#                      ; (domyślnie = trash_folder)
 
 # FILTRY (działa tylko w gmfwi.py):
 # Format: field:value:label1,label2:never_spam

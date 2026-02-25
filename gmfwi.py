@@ -546,6 +546,7 @@ def load_accounts(config_path: str) -> List[dict]:
 			"gmail_user": gmail_user,
 			"gmail_folder": sec.get("gmail_folder", fallback=defaults.get("gmail_folder", "INBOX")),
 			"trash_folder": trash_folder,
+			"spam_folder": sec.get("spam_folder", fallback=defaults.get("spam_folder", trash_folder)),
 			"filters": filters_str,
 			"mark_source_as_read": mark_source_as_read,
 			"spam_keywords_file": _resolve_path(
@@ -699,6 +700,8 @@ def _run_autoforward(source: IMAP4, gmail: IMAP4_SSL, acc: dict, folder: str) ->
 	gmail_folder = acc["gmail_folder"]
 	filters = parse_filters_from_config(acc.get("filters", ""))
 	mark_source_as_read = acc.get("mark_source_as_read", False)
+	trash_folder = acc.get("trash_folder", "Trash")
+	spam_folder = acc.get("spam_folder", trash_folder)
 	spam_keywords = load_spam_keywords(acc.get("spam_keywords_file", ""))
 
 	if filters:
@@ -734,11 +737,11 @@ def _run_autoforward(source: IMAP4, gmail: IMAP4_SSL, acc: dict, folder: str) ->
 				            name, spam_match)
 				if mark_source_as_read:
 					mark_as_read(source, uid, folder)
-				if move_to_trash(source, uid, folder, acc.get("trash_folder", "Trash")):
-					logger.info("[%s] ✓ Spam UID=%s przeniesiony do Trash na źródle", name, uid)
+				if move_to_trash(source, uid, folder, spam_folder):
+					logger.info("[%s] ✓ Spam UID=%s przeniesiony do %s na źródle", name, uid, spam_folder)
 					skipped += 1
 				else:
-					logger.warning("[%s] ✗ Nie udało się przenieść spamu UID=%s do Trash", name, uid)
+					logger.warning("[%s] ✗ Nie udało się przenieść spamu UID=%s do %s", name, uid, spam_folder)
 					failed += 1
 				continue
 
@@ -772,10 +775,10 @@ def _run_autoforward(source: IMAP4, gmail: IMAP4_SSL, acc: dict, folder: str) ->
 					else:
 						logger.warning("[%s] ✗ Nie udało się oznaczyć wiadomości UID=%s jako przeczytanej", name, uid)
 
-				if move_to_trash(source, uid, folder, acc.get("trash_folder", "Trash")):
-					logger.info("[%s] ✓ Wiadomość UID=%s przeniesiona do %s", name, uid, acc.get("trash_folder", "Trash"))
+				if move_to_trash(source, uid, folder, trash_folder):
+					logger.info("[%s] ✓ Wiadomość UID=%s przeniesiona do %s", name, uid, trash_folder)
 				else:
-					logger.warning("[%s] ✗ Nie udało się przenieść wiadomości UID=%s do %s", name, uid, acc.get("trash_folder", "Trash"))
+					logger.warning("[%s] ✗ Nie udało się przenieść wiadomości UID=%s do %s", name, uid, trash_folder)
 			else:
 				failed += 1
 				logger.warning("[%s] ✗ Nie udało się skopiować wiadomości UID=%s na Gmail", name, uid)
