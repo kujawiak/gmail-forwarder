@@ -70,7 +70,7 @@ def get_uid_list(server: IMAP4, folder: str = "INBOX") -> List[int]:
 	except Exception:
 		logger.warning("Nie udało się wybrać folderu %s", folder)
 		return []
-	resp, data = server.uid("SEARCH", "ALL")
+	resp, data = server.uid("SEARCH", "UNDELETED")
 	if resp != "OK" or not data:
 		return []
 	try:
