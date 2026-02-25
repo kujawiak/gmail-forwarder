@@ -113,6 +113,21 @@ def move_to_trash(server: IMAP4, uid: int, source_folder: str = "INBOX", trash_f
 	return False
 
 
+def mark_as_read(server: IMAP4, uid: int, folder: str = "INBOX") -> bool:
+	"""Oznacza wiadomość jako przeczytaną (flaga \\Seen)."""
+	try:
+		server.select(folder, readonly=False)
+		resp, _ = server.uid("STORE", str(uid), "+FLAGS", "(\\Seen)")
+		if resp == "OK":
+			logger.debug("Wiadomość UID=%s oznaczona jako przeczytana", uid)
+			return True
+		logger.warning("Nie udało się oznaczyć UID=%s jako przeczytanej: %s", uid, resp)
+		return False
+	except Exception as e:
+		logger.debug("Błąd oznaczania wiadomości UID=%s: %s", uid, e)
+	return False
+
+
 def fetch_message_info(server: IMAP4, uid: int, folder: str = "INBOX") -> dict:
 	"""Pobiera nagłówki i krótki podgląd treści wiadomości."""
 	try:
@@ -410,6 +425,7 @@ def load_accounts(config_path: str) -> List[dict]:
 			logger.warning("Pominięto sekcję %s — brak gmail_user", section)
 			continue
 		filters_str = sec.get("filters", fallback=defaults.get("filters", ""))
+		mark_source_as_read = getbool(sec, "mark_source_as_read", fallback=False)
 		
 		accounts.append({
 			"name": section,
@@ -422,6 +438,7 @@ def load_accounts(config_path: str) -> List[dict]:
 			"gmail_user": gmail_user,
 			"gmail_folder": sec.get("gmail_folder", fallback=defaults.get("gmail_folder", "INBOX")),
 			"filters": filters_str,
+			"mark_source_as_read": mark_source_as_read,
 		})
 	return accounts
 
@@ -597,11 +614,14 @@ def _run_autoforward(source: IMAP4, gmail: IMAP4_SSL, acc: dict, folder: str) ->
 	name = acc["name"]
 	gmail_folder = acc["gmail_folder"]
 	filters = parse_filters_from_config(acc.get("filters", ""))
+	mark_source_as_read = acc.get("mark_source_as_read", False)
 
 	uid_list = get_uid_list(source, folder)
 	logger.info("[%s] Wiadomości do skopiowania na Gmail: %d", name, len(uid_list))
 	if filters:
 		logger.info("[%s] Załadowano %d filtrów", name, len(filters))
+	if mark_source_as_read:
+		logger.info("[%s] Wiadomości będą oznaczane jako przeczytane na serwerze źródłowym", name)
 
 	for uid in uid_list:
 		try:
@@ -627,6 +647,13 @@ def _run_autoforward(source: IMAP4, gmail: IMAP4_SSL, acc: dict, folder: str) ->
 					apply_gmail_labels(gmail, message_id, labels, never_spam)
 				else:
 					logger.info("[%s] Brak etykiet do zastosowania", name)
+				
+				# Oznacz jako przeczytaną na serwerze źródłowym jeśli włączone
+				if mark_source_as_read:
+					if mark_as_read(source, uid, folder):
+						logger.info("[%s] ✓ Wiadomość UID=%s oznaczona jako przeczytana", name, uid)
+					else:
+						logger.warning("[%s] ✗ Nie udało się oznaczyć wiadomości UID=%s jako przeczytanej", name, uid)
 				
 				if move_to_trash(source, uid, folder):
 					logger.info("[%s] ✓ Wiadomość UID=%s przeniesiona do Trash", name, uid)

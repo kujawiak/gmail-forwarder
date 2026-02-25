@@ -8,8 +8,11 @@
 # smtp_host = smtp.example.com            ; SMTP serwera macierzystego (gmfw.py, domyślnie = host)
 # smtp_port = 587
 # smtp_ssl = true
-# gmail_user = yourname@gmail.com         ; używane przez gmfwi.py (IMAP APPEND)
+# gmfwi.py - opcje:
+# gmail_user = yourname@gmail.com         ; wymagane
 # gmail_folder = INBOX                    ; folder na Gmail (domyślnie INBOX)
+# mark_source_as_read = false             ; oznacz wiadomość jako przeczytaną na serwerze źródłowym przed przeniesieniem do Trash (domyślnie false)
+# filters = ...                           ; zobacz sekcję FILTRY poniżej
 
 # HASŁA:
 # Hasła są przechowywane bezpiecznie w keyring systemu (Windows Credential Manager, Linux Secret Service, macOS Keychain).
