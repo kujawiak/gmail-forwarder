@@ -285,39 +285,39 @@ def check_message_against_filters(raw_message: bytes, filters: List[dict]) -> tu
 		return ([], False)
 
 
-def apply_gmail_labels(gmail_server: IMAP4_SSL, message_id: str, labels: List[str], 
-                       remove_from_spam: bool = False) -> bool:
+def apply_gmail_labels(gmail_server: IMAP4_SSL, message_id: str, labels: List[str],
+                       remove_from_spam: bool = False, gmail_folder: str = "INBOX") -> bool:
 	"""Znajduje wiadomość po Message-ID i aplikuje etykiety Gmail przez X-GM-LABELS."""
 	import time
-	
+
 	if not message_id:
 		logger.warning("Brak Message-ID, nie można zastosować etykiet")
 		return False
-	
+
 	try:
+		# Ustal kolejność folderów do przeszukania: najpierw skonfigurowany folder docelowy
+		folders_to_try = [gmail_folder]
+		if gmail_folder != "[Gmail]/All Mail":
+			folders_to_try.append("[Gmail]/All Mail")
+
 		# Gmail potrzebuje chwili po APPEND zanim wiadomość będzie widoczna przez SEARCH
 		uid = None
 		for attempt in range(5):
 			if attempt > 0:
 				time.sleep(1)
-			
-			# Szukaj w INBOX
-			gmail_server.select("INBOX")
-			resp, data = gmail_server.uid('SEARCH', None, f'HEADER Message-ID "{message_id}"')
-			
-			if resp == "OK" and data[0]:
-				uid = data[0].split()[-1]  # ostatni UID (najnowszy)
+
+			for folder in folders_to_try:
+				try:
+					gmail_server.select(folder)
+					resp, data = gmail_server.uid('SEARCH', None, f'HEADER Message-ID "{message_id}"')
+					if resp == "OK" and data[0]:
+						uid = data[0].split()[-1]  # ostatni UID (najnowszy)
+						break
+				except Exception:
+					pass
+
+			if uid:
 				break
-			
-			# Spróbuj też w [Gmail]/All Mail
-			try:
-				gmail_server.select("[Gmail]/All Mail")
-				resp, data = gmail_server.uid('SEARCH', None, f'HEADER Message-ID "{message_id}"')
-				if resp == "OK" and data[0]:
-					uid = data[0].split()[-1]
-					break
-			except Exception:
-				pass
 		
 		if not uid:
 			logger.warning("❌ Nie znaleziono wiadomości na Gmail (Message-ID: %s)", message_id)
@@ -618,7 +618,7 @@ def _run_autoforward(source: IMAP4, gmail: IMAP4_SSL, acc: dict, folder: str) ->
 				# Aplikuj etykiety jeśli są filtry
 				if labels or never_spam:
 					logger.info("[%s] Aplikowanie filtrów: etykiety=%s, never_spam=%s", name, labels, never_spam)
-					apply_gmail_labels(gmail, message_id, labels, never_spam)
+					apply_gmail_labels(gmail, message_id, labels, never_spam, gmail_folder=gmail_folder)
 				else:
 					logger.info("[%s] Brak etykiet do zastosowania", name)
 				
