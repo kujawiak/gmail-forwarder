@@ -22,6 +22,7 @@ import imaplib
 import logging
 import os
 import re
+import sys
 from email.parser import BytesParser
 from email import policy
 from email.utils import parsedate_to_datetime
@@ -551,6 +552,7 @@ def main() -> None:
 		gmail_user = acc["gmail_user"]
 
 		print(f"=== Konto: {name} — {user}@{host} → Gmail: {gmail_user}")
+		sys.stdout.flush()
 
 		# --- obsługa usuwania haseł z keyring ---
 		if args.forget_password:
