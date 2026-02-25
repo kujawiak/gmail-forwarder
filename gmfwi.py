@@ -612,10 +612,10 @@ def _run_autoforward(source: IMAP4, gmail: IMAP4_SSL, acc: dict, folder: str) ->
 	filters = parse_filters_from_config(acc.get("filters", ""))
 	mark_source_as_read = acc.get("mark_source_as_read", False)
 
-	uid_list = get_uid_list(source, folder)
-	logger.info("[%s] Wiadomości do skopiowania na Gmail: %d", name, len(uid_list))
 	if filters:
 		logger.info("[%s] Załadowano %d filtrów", name, len(filters))
+	uid_list = get_uid_list(source, folder)
+	logger.info("[%s] Wiadomości do skopiowania na Gmail: %d", name, len(uid_list))
 	if mark_source_as_read:
 		logger.info("[%s] Wiadomości będą oznaczane jako przeczytane na serwerze źródłowym", name)
 
