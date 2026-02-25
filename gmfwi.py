@@ -82,7 +82,10 @@ def get_uid_list(server: IMAP4, folder: str = "INBOX") -> List[int]:
 def fetch_full_message(server: IMAP4, uid: int, folder: str = "INBOX") -> bytes:
 	"""Pobiera pełną wiadomość (RFC822) z IMAP przez UID FETCH."""
 	try:
-		server.select(folder, readonly=True)
+		typ, _ = server.select(folder, readonly=True)
+		if typ != "OK":
+			logger.warning("Nie udało się wybrać folderu %s", folder)
+			return b""
 		resp, data = server.uid("FETCH", str(uid), "(RFC822)")
 		if resp != "OK":
 			logger.warning("UID FETCH uid=%s zwróciło odpowiedź: %s", uid, resp)
@@ -102,7 +105,10 @@ def fetch_full_message(server: IMAP4, uid: int, folder: str = "INBOX") -> bytes:
 def move_to_trash(server: IMAP4, uid: int, source_folder: str = "INBOX", trash_folder: str = "Trash") -> bool:
 	"""Przenosi wiadomość do folderu Trash (przez UID COPY + UID STORE + EXPUNGE)."""
 	try:
-		server.select(source_folder, readonly=False)
+		typ, _ = server.select(source_folder, readonly=False)
+		if typ != "OK":
+			logger.warning("Nie udało się wybrać folderu %s", source_folder)
+			return False
 		resp, _ = server.uid("COPY", str(uid), trash_folder)
 		if resp == "OK":
 			resp, _ = server.uid("STORE", str(uid), "+FLAGS", "(\\Deleted)")
@@ -121,7 +127,10 @@ def move_to_trash(server: IMAP4, uid: int, source_folder: str = "INBOX", trash_f
 def mark_as_read(server: IMAP4, uid: int, folder: str = "INBOX") -> bool:
 	"""Oznacza wiadomość jako przeczytaną (flaga \\Seen)."""
 	try:
-		server.select(folder, readonly=False)
+		typ, _ = server.select(folder, readonly=False)
+		if typ != "OK":
+			logger.warning("Nie udało się wybrać folderu %s", folder)
+			return False
 		resp, _ = server.uid("STORE", str(uid), "+FLAGS", "(\\Seen)")
 		if resp == "OK":
 			logger.info("Wiadomość UID=%s oznaczona jako przeczytana", uid)
@@ -136,7 +145,10 @@ def mark_as_read(server: IMAP4, uid: int, folder: str = "INBOX") -> bool:
 def fetch_message_info(server: IMAP4, uid: int, folder: str = "INBOX") -> dict:
 	"""Pobiera nagłówki i krótki podgląd treści wiadomości (bez pobierania załączników)."""
 	try:
-		server.select(folder, readonly=True)
+		typ, _ = server.select(folder, readonly=True)
+		if typ != "OK":
+			logger.warning("Nie udało się wybrać folderu %s", folder)
+			return {"subject": "(błąd odczytu)", "from": "", "date": "", "preview": ""}
 
 		# Pobierz tylko potrzebne nagłówki — bez treści i załączników
 		resp, data = server.uid("FETCH", str(uid), "(BODY.PEEK[HEADER.FIELDS (Subject From Date)])")
@@ -236,10 +248,10 @@ def check_message_against_filters(raw_message: bytes, filters: List[dict]) -> tu
 		msg_from = msg.get('From', '')
 		msg_subject = msg.get('Subject', '')
 		
-		logger.info("Sprawdzanie filtrów dla wiadomości:")
-		logger.info("  To: %s", msg_to)
-		logger.info("  From: %s", msg_from)
-		logger.info("  Subject: %s", msg_subject)
+		logger.debug("Sprawdzanie filtrów dla wiadomości:")
+		logger.debug("  To: %s", msg_to)
+		logger.debug("  From: %s", msg_from)
+		logger.debug("  Subject: %s", msg_subject)
 		
 		for filter_rule in filters:
 			field = filter_rule['field']
@@ -260,29 +272,29 @@ def check_message_against_filters(raw_message: bytes, filters: List[dict]) -> tu
 			is_regex = any(c in pattern for c in '.[](){}*+?^$|\\')
 			
 			if is_regex:
-				logger.info("  Sprawdzanie: czy [%s] pasuje do regex '%s'?", field, pattern)
+				logger.debug("  Sprawdzanie: czy [%s] pasuje do regex '%s'?", field, pattern)
 				match = re.search(pattern, header_value, re.IGNORECASE)
 				if match:
 					labels_to_apply.update(filter_rule['labels'])
 					never_spam = never_spam or filter_rule['never_spam']
 					logger.info("  ✓ REGEX DOPASOWANY: '%s'! Dodaję etykiety: %s", match.group(), filter_rule['labels'])
 				else:
-					logger.info("  ✗ Regex nie pasuje")
+					logger.debug("  ✗ Regex nie pasuje")
 			else:
 				value = pattern.lower()
 				header_lower = header_value.lower()
-				logger.info("  Sprawdzanie: czy [%s]='%s' zawiera '%s'?", field, header_lower[:50], value)
+				logger.debug("  Sprawdzanie: czy [%s]='%s' zawiera '%s'?", field, header_lower[:50], value)
 				if value in header_lower:
 					labels_to_apply.update(filter_rule['labels'])
 					never_spam = never_spam or filter_rule['never_spam']
 					logger.info("  ✓ DOPASOWANO! Dodaję etykiety: %s, never_spam: %s", filter_rule['labels'], filter_rule['never_spam'])
 				else:
-					logger.info("  ✗ Nie pasuje")
+					logger.debug("  ✗ Nie pasuje")
 		
 		if labels_to_apply or never_spam:
 			logger.info("Wynik sprawdzania: etykiety=%s, never_spam=%s", list(labels_to_apply), never_spam)
 		else:
-			logger.info("Żaden filtr nie pasuje do tej wiadomości")
+			logger.debug("Żaden filtr nie pasuje do tej wiadomości")
 		
 		return (list(labels_to_apply), never_spam)
 	except Exception:
@@ -601,7 +613,7 @@ def main() -> None:
 			for srv in (source_server, gmail_server):
 				if srv:
 					try:
-						srv.close()
+						srv.logout()
 					except Exception:
 						pass
 
