@@ -23,6 +23,7 @@ import logging
 import os
 import re
 import sys
+import time
 from email.parser import BytesParser
 from email import policy
 from email.utils import parsedate_to_datetime
@@ -288,8 +289,6 @@ def check_message_against_filters(raw_message: bytes, filters: List[dict]) -> tu
 def apply_gmail_labels(gmail_server: IMAP4_SSL, message_id: str, labels: List[str],
                        remove_from_spam: bool = False, gmail_folder: str = "INBOX") -> bool:
 	"""Znajduje wiadomość po Message-ID i aplikuje etykiety Gmail przez X-GM-LABELS."""
-	import time
-
 	if not message_id:
 		logger.warning("Brak Message-ID, nie można zastosować etykiet")
 		return False
