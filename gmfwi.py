@@ -599,22 +599,27 @@ def _run_autoforward(source: IMAP4, gmail: IMAP4_SSL, acc: dict, folder: str) ->
 	if mark_source_as_read:
 		logger.info("[%s] Wiadomości będą oznaczane jako przeczytane na serwerze źródłowym", name)
 
+	copied = 0
+	failed = 0
+
 	for uid in uid_list:
 		try:
 			logger.info("[%s] Przetwarzanie wiadomości UID=%s", name, uid)
-			
+
 			raw = fetch_full_message(source, uid, folder)
 			if not raw:
 				logger.warning("[%s] Nie udało się pobrać wiadomości UID=%s", name, uid)
+				failed += 1
 				continue
-			
+
 			# Sprawdź filtry przed skopiowaniem
 			labels, never_spam = check_message_against_filters(raw, filters)
-			
+
 			# Kopiuj na Gmail (zwraca tuple: sukces, message_id)
 			success, message_id = append_to_gmail(raw, gmail, gmail_folder, mark_as_seen=False)
-			
+
 			if success:
+				copied += 1
 				logger.info("[%s] ✓ Wiadomość skopiowana na Gmail (Message-ID: %s)", name, message_id[:30] + "..." if len(message_id) > 30 else message_id)
 				# Aplikuj etykiety jeśli są filtry
 				if labels or never_spam:
@@ -622,22 +627,26 @@ def _run_autoforward(source: IMAP4, gmail: IMAP4_SSL, acc: dict, folder: str) ->
 					apply_gmail_labels(gmail, message_id, labels, never_spam, gmail_folder=gmail_folder)
 				else:
 					logger.info("[%s] Brak etykiet do zastosowania", name)
-				
+
 				# Oznacz jako przeczytaną na serwerze źródłowym jeśli włączone
 				if mark_source_as_read:
 					if mark_as_read(source, uid, folder):
 						logger.info("[%s] ✓ Wiadomość UID=%s oznaczona jako przeczytana", name, uid)
 					else:
 						logger.warning("[%s] ✗ Nie udało się oznaczyć wiadomości UID=%s jako przeczytanej", name, uid)
-				
+
 				if move_to_trash(source, uid, folder, acc.get("trash_folder", "Trash")):
 					logger.info("[%s] ✓ Wiadomość UID=%s przeniesiona do %s", name, uid, acc.get("trash_folder", "Trash"))
 				else:
 					logger.warning("[%s] ✗ Nie udało się przenieść wiadomości UID=%s do %s", name, uid, acc.get("trash_folder", "Trash"))
 			else:
+				failed += 1
 				logger.warning("[%s] ✗ Nie udało się skopiować wiadomości UID=%s na Gmail", name, uid)
 		except Exception:
+			failed += 1
 			logger.exception("[%s] Błąd przy przetwarzaniu wiadomości UID=%s", name, uid)
+
+	logger.info("[%s] Zakończono: skopiowano %d, błędy %d (łącznie %d)", name, copied, failed, len(uid_list))
 
 
 def _run_preview(server: IMAP4, acc: dict, folder: str, limit_override: Optional[int]) -> None:
