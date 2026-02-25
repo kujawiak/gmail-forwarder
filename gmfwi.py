@@ -228,6 +228,77 @@ def parse_filters_from_config(filter_str: str) -> List[dict]:
 	return filters
 
 
+def _resolve_path(path: str, base_dir: str) -> str:
+	"""Zwraca ścieżkę bezwzględną; ścieżki względne rozwiązuje względem base_dir."""
+	if not path:
+		return ""
+	if os.path.isabs(path):
+		return path
+	return os.path.join(base_dir, path)
+
+
+def load_spam_keywords(filepath: str) -> List[str]:
+	"""Wczytuje słownik słów kluczowych/wyrażeń regularnych spamu z pliku.
+
+	Jeden wpis na linię; linie zaczynające się od '#' są komentarzami.
+	Zwraca pustą listę jeśli plik nie istnieje lub jest pusty.
+	"""
+	if not filepath:
+		return []
+	if not os.path.exists(filepath):
+		logger.warning("Plik spam_keywords_file nie istnieje: %s", filepath)
+		return []
+	keywords = []
+	with open(filepath, encoding="utf-8") as f:
+		for line in f:
+			line = line.strip()
+			if not line or line.startswith('#'):
+				continue
+			is_regex = any(c in line for c in '.[](){}*+?^$|\\')
+			if is_regex:
+				try:
+					re.compile(line)
+				except re.error as e:
+					logger.warning("  ✗ Pominięto spam keyword — niepoprawny regex '%s': %s", line, e)
+					continue
+			keywords.append(line)
+	logger.info("Wczytano %d spam keyword(s) z %s", len(keywords), filepath)
+	return keywords
+
+
+def check_body_for_spam(raw_message: bytes, keywords: List[str]) -> tuple[bool, str]:
+	"""Sprawdza treść wiadomości pod kątem słów kluczowych spamu.
+
+	Przeszukuje wszystkie części text/plain i text/html.
+	Zwraca (True, dopasowane_wyrażenie) lub (False, "").
+	"""
+	if not keywords:
+		return (False, "")
+	try:
+		msg = BytesParser(policy=policy.default).parsebytes(raw_message)
+		body_text = ""
+		for part in msg.walk():
+			ct = part.get_content_type()
+			if ct in ('text/plain', 'text/html'):
+				try:
+					body_text += part.get_content() or ""
+				except Exception:
+					pass
+		body_lower = body_text.lower()
+		for kw in keywords:
+			is_regex = any(c in kw for c in '.[](){}*+?^$|\\')
+			if is_regex:
+				m = re.search(kw, body_text, re.IGNORECASE)
+				if m:
+					return (True, m.group())
+			else:
+				if kw.lower() in body_lower:
+					return (True, kw)
+	except Exception:
+		logger.exception("Błąd podczas sprawdzania treści wiadomości pod kątem spamu")
+	return (False, "")
+
+
 def check_message_against_filters(raw_message: bytes, filters: List[dict]) -> tuple[List[str], bool]:
 	"""Sprawdza wiadomość względem filtrów i zwraca (etykiety, never_spam).
 	
@@ -433,6 +504,7 @@ def load_accounts(config_path: str) -> List[dict]:
 		logger.error("Plik konfiguracyjny nie istnieje: %s", config_path)
 		return []
 
+	config_dir = os.path.dirname(os.path.abspath(config_path))
 	cfg = configparser.ConfigParser()
 	cfg.read(config_path, encoding="utf-8")
 	defaults = dict(cfg["defaults"]) if "defaults" in cfg else {}
@@ -476,6 +548,10 @@ def load_accounts(config_path: str) -> List[dict]:
 			"trash_folder": trash_folder,
 			"filters": filters_str,
 			"mark_source_as_read": mark_source_as_read,
+			"spam_keywords_file": _resolve_path(
+				sec.get("spam_keywords_file", fallback=defaults.get("spam_keywords_file", "")),
+				config_dir
+			),
 		})
 	return accounts
 
@@ -623,9 +699,12 @@ def _run_autoforward(source: IMAP4, gmail: IMAP4_SSL, acc: dict, folder: str) ->
 	gmail_folder = acc["gmail_folder"]
 	filters = parse_filters_from_config(acc.get("filters", ""))
 	mark_source_as_read = acc.get("mark_source_as_read", False)
+	spam_keywords = load_spam_keywords(acc.get("spam_keywords_file", ""))
 
 	if filters:
 		logger.info("[%s] Załadowano %d filtrów", name, len(filters))
+	if spam_keywords:
+		logger.info("[%s] Załadowano %d spam keyword(s)", name, len(spam_keywords))
 	uid_list = get_uid_list(source, folder)
 	logger.info("[%s] Wiadomości do skopiowania na Gmail: %d", name, len(uid_list))
 	if mark_source_as_read:
@@ -648,6 +727,21 @@ def _run_autoforward(source: IMAP4, gmail: IMAP4_SSL, acc: dict, folder: str) ->
 			# Sprawdź filtry przed skopiowaniem
 			labels, never_spam = check_message_against_filters(raw, filters)
 
+			# Sprawdź spam po treści wiadomości — jeśli wykryty, usuń tylko ze źródła
+			is_spam, spam_match = check_body_for_spam(raw, spam_keywords)
+			if is_spam:
+				logger.info("[%s] ⚠ Spam wykryty (pasuje: '%s') — usuwam ze źródła bez kopiowania na Gmail",
+				            name, spam_match)
+				if mark_source_as_read:
+					mark_as_read(source, uid, folder)
+				if move_to_trash(source, uid, folder, acc.get("trash_folder", "Trash")):
+					logger.info("[%s] ✓ Spam UID=%s przeniesiony do Trash na źródle", name, uid)
+					skipped += 1
+				else:
+					logger.warning("[%s] ✗ Nie udało się przenieść spamu UID=%s do Trash", name, uid)
+					failed += 1
+				continue
+
 			# Sprawdź czy wiadomość już istnieje na Gmail (ochrona przed duplikacją przy restarcie)
 			msg_headers = BytesParser(policy=policy.default).parsebytes(raw)
 			message_id_raw = msg_headers.get("Message-ID", "").strip().strip('<>').strip()
@@ -664,7 +758,7 @@ def _run_autoforward(source: IMAP4, gmail: IMAP4_SSL, acc: dict, folder: str) ->
 					copied += 1
 					logger.info("[%s] ✓ Wiadomość skopiowana na Gmail (Message-ID: %s)", name, message_id[:30] + "..." if len(message_id) > 30 else message_id)
 
-				# Aplikuj etykiety jeśli są filtry
+				# Aplikuj etykiety Gmail
 				if labels or never_spam:
 					logger.info("[%s] Aplikowanie filtrów: etykiety=%s, never_spam=%s", name, labels, never_spam)
 					apply_gmail_labels(gmail, message_id, labels, never_spam, gmail_folder=gmail_folder)
