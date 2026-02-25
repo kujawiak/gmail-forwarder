@@ -192,7 +192,7 @@ def parse_filters_from_config(filter_str: str) -> List[dict]:
 		line = line.strip()
 		if not line or line.startswith('#'):
 			continue
-		parts = line.split(':')
+		parts = line.split(':', 3)
 		if len(parts) >= 3:
 			field = parts[0].strip().lower()
 			value = parts[1].strip()
