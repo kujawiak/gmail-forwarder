@@ -38,7 +38,7 @@ limit = 5
 
 # FILTRY (działa tylko w gmfwi.py):
 # Format: field:value:label1,label2:never_spam
-# - field: to, from, subject
+# - field: to, from, subject, attach
 # - value: tekst do wyszukania ALBO regex (case-insensitive)
 #   * Zwykły tekst: gmail.com (szuka tekstu w polu)
 #   * Regex: .*@facebookmail\.com (automatycznie wykrywane)
@@ -50,3 +50,4 @@ limit = 5
 #     from:important@company.com:Ważne:true
 #     from:.*@facebookmail\.com:Facebook:true
 #     subject:Invoice|FV:Faktury:false
+#     attach:true:Załączniki:false

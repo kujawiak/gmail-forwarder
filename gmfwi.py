@@ -299,6 +299,21 @@ def check_body_for_spam(raw_message: bytes, keywords: List[str]) -> tuple[bool, 
 	return (False, "")
 
 
+def message_has_attachments(raw_message: bytes) -> bool:
+	"""Sprawdza czy wiadomość zawiera załączniki."""
+	try:
+		msg = BytesParser(policy=policy.default).parsebytes(raw_message)
+		for part in msg.walk():
+			if part.get_filename():
+				return True
+			cd = part.get("Content-Disposition", "")
+			if cd.strip().lower().startswith("attachment"):
+				return True
+	except Exception:
+		pass
+	return False
+
+
 def check_message_against_filters(raw_message: bytes, filters: List[dict]) -> tuple[List[str], bool]:
 	"""Sprawdza wiadomość względem filtrów i zwraca (etykiety, never_spam).
 	
@@ -329,7 +344,17 @@ def check_message_against_filters(raw_message: bytes, filters: List[dict]) -> tu
 			pattern = filter_rule['value']
 			
 			# Pobierz wartość pola z wiadomości
-			if field == 'to':
+			if field == 'attach':
+				# Wartość pola jest ignorowana — filtr pasuje gdy wiadomość ma dowolny załącznik
+				if message_has_attachments(raw_message):
+					labels_to_apply.update(filter_rule['labels'])
+					never_spam = never_spam or filter_rule['never_spam']
+					logger.info("  ✓ DOPASOWANO! Wiadomość ma załączniki. Dodaję etykiety: %s",
+					            filter_rule['labels'])
+				else:
+					logger.debug("  ✗ Nie pasuje (brak załączników)")
+				continue  # pomiń dalszą logikę pattern-matching
+			elif field == 'to':
 				header_value = msg_to
 			elif field == 'from':
 				header_value = msg_from
