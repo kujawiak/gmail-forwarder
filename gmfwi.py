@@ -119,7 +119,7 @@ def mark_as_read(server: IMAP4, uid: int, folder: str = "INBOX") -> bool:
 		server.select(folder, readonly=False)
 		resp, _ = server.uid("STORE", str(uid), "+FLAGS", "(\\Seen)")
 		if resp == "OK":
-			logger.debug("Wiadomość UID=%s oznaczona jako przeczytana", uid)
+			logger.info("Wiadomość UID=%s oznaczona jako przeczytana", uid)
 			return True
 		logger.warning("Nie udało się oznaczyć UID=%s jako przeczytanej: %s", uid, resp)
 		return False
@@ -184,7 +184,7 @@ def parse_filters_from_config(filter_str: str) -> List[dict]:
 		logger.info("Brak zdefiniowanych filtrów")
 		return filters
 	
-	logger.info("Parsowanie filtrów z config: '%s'", filter_str[:100])
+	logger.debug("Parsowanie filtrów z config: '%s'", filter_str[:100])
 	
 	for line in filter_str.strip().split('\n'):
 		line = line.strip()
@@ -426,6 +426,7 @@ def load_accounts(config_path: str) -> List[dict]:
 			continue
 		filters_str = sec.get("filters", fallback=defaults.get("filters", ""))
 		mark_source_as_read = getbool(sec, "mark_source_as_read", fallback=False)
+		trash_folder = sec.get("trash_folder", fallback=defaults.get("trash_folder", "Trash"))
 		
 		accounts.append({
 			"name": section,
@@ -437,6 +438,7 @@ def load_accounts(config_path: str) -> List[dict]:
 			"limit": sec.getint("limit", fallback=10),
 			"gmail_user": gmail_user,
 			"gmail_folder": sec.get("gmail_folder", fallback=defaults.get("gmail_folder", "INBOX")),
+			"trash_folder": trash_folder,
 			"filters": filters_str,
 			"mark_source_as_read": mark_source_as_read,
 		})
@@ -655,10 +657,10 @@ def _run_autoforward(source: IMAP4, gmail: IMAP4_SSL, acc: dict, folder: str) ->
 					else:
 						logger.warning("[%s] ✗ Nie udało się oznaczyć wiadomości UID=%s jako przeczytanej", name, uid)
 				
-				if move_to_trash(source, uid, folder):
-					logger.info("[%s] ✓ Wiadomość UID=%s przeniesiona do Trash", name, uid)
+				if move_to_trash(source, uid, folder, acc.get("trash_folder", "Trash")):
+					logger.info("[%s] ✓ Wiadomość UID=%s przeniesiona do %s", name, uid, acc.get("trash_folder", "Trash"))
 				else:
-					logger.warning("[%s] ✗ Nie udało się przenieść wiadomości UID=%s do Trash", name, uid)
+					logger.warning("[%s] ✗ Nie udało się przenieść wiadomości UID=%s do %s", name, uid, acc.get("trash_folder", "Trash"))
 			else:
 				logger.warning("[%s] ✗ Nie udało się skopiować wiadomości UID=%s na Gmail", name, uid)
 		except Exception:
