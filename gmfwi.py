@@ -99,19 +99,13 @@ def fetch_full_message(server: IMAP4, uid: int, folder: str = "INBOX") -> bytes:
 	return b""
 
 
-def _uid_store(server: IMAP4, uid: int, folder: str, op: str, flags: str) -> tuple:
-	"""Wybiera folder i wykonuje UID STORE na podanym UID."""
-	server.select(folder, readonly=False)
-	return server.uid("STORE", str(uid), op, flags)
-
-
 def move_to_trash(server: IMAP4, uid: int, source_folder: str = "INBOX", trash_folder: str = "Trash") -> bool:
 	"""Przenosi wiadomość do folderu Trash (przez UID COPY + UID STORE + EXPUNGE)."""
 	try:
 		server.select(source_folder, readonly=False)
 		resp, _ = server.uid("COPY", str(uid), trash_folder)
 		if resp == "OK":
-			resp, _ = _uid_store(server, uid, source_folder, "+FLAGS", "(\\Deleted)")
+			resp, _ = server.uid("STORE", str(uid), "+FLAGS", "(\\Deleted)")
 			if resp == "OK":
 				server.expunge()
 				logger.debug("Wiadomość UID=%s przeniesiona do %s", uid, trash_folder)
@@ -124,7 +118,8 @@ def move_to_trash(server: IMAP4, uid: int, source_folder: str = "INBOX", trash_f
 def mark_as_read(server: IMAP4, uid: int, folder: str = "INBOX") -> bool:
 	"""Oznacza wiadomość jako przeczytaną (flaga \\Seen)."""
 	try:
-		resp, _ = _uid_store(server, uid, folder, "+FLAGS", "(\\Seen)")
+		server.select(folder, readonly=False)
+		resp, _ = server.uid("STORE", str(uid), "+FLAGS", "(\\Seen)")
 		if resp == "OK":
 			logger.info("Wiadomość UID=%s oznaczona jako przeczytana", uid)
 			return True
