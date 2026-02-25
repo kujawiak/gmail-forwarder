@@ -66,16 +66,16 @@ def connect_imap(host: str, user: str, password: str, port: int | None = None, u
 def get_uid_list(server: IMAP4, folder: str = "INBOX") -> List[int]:
 	"""Zwraca listę trwałych UID wiadomości w folderze IMAP (przez UID SEARCH)."""
 	try:
-		server.select(folder, readonly=True)
-	except Exception:
-		logger.warning("Nie udało się wybrać folderu %s", folder)
-		return []
-	resp, data = server.uid("SEARCH", "UNDELETED")
-	if resp != "OK" or not data:
-		return []
-	try:
+		typ, _ = server.select(folder, readonly=True)
+		if typ != "OK":
+			logger.warning("Nie udało się wybrać folderu %s", folder)
+			return []
+		resp, data = server.uid("SEARCH", "UNDELETED")
+		if resp != "OK" or not data:
+			return []
 		return [int(uid) for uid in data[0].split()] if data[0] else []
 	except Exception:
+		logger.warning("Błąd podczas pobierania listy wiadomości z folderu %s", folder)
 		return []
 
 
