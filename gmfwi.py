@@ -382,6 +382,22 @@ def append_to_gmail(raw_message: bytes, gmail_server: IMAP4_SSL, gmail_folder: s
 		return (False, "")
 
 
+def _gmail_message_exists(gmail_server: IMAP4_SSL, message_id: str, gmail_folder: str) -> bool:
+	"""Sprawdza czy wiadomość o podanym Message-ID już istnieje na Gmail (ochrona przed duplikacją)."""
+	folders = [gmail_folder]
+	if gmail_folder != "[Gmail]/All Mail":
+		folders.append("[Gmail]/All Mail")
+	for folder in folders:
+		try:
+			gmail_server.select(folder)
+			resp, data = gmail_server.uid('SEARCH', None, f'HEADER Message-ID "{message_id}"')
+			if resp == "OK" and data[0]:
+				return True
+		except Exception:
+			pass
+	return False
+
+
 # ---------------------------------------------------------------------------
 # Konfiguracja
 # ---------------------------------------------------------------------------
@@ -595,6 +611,7 @@ def _run_autoforward(source: IMAP4, gmail: IMAP4_SSL, acc: dict, folder: str) ->
 		logger.info("[%s] Wiadomości będą oznaczane jako przeczytane na serwerze źródłowym", name)
 
 	copied = 0
+	skipped = 0
 	failed = 0
 
 	for uid in uid_list:
@@ -610,12 +627,22 @@ def _run_autoforward(source: IMAP4, gmail: IMAP4_SSL, acc: dict, folder: str) ->
 			# Sprawdź filtry przed skopiowaniem
 			labels, never_spam = check_message_against_filters(raw, filters)
 
-			# Kopiuj na Gmail (zwraca tuple: sukces, message_id)
-			success, message_id = append_to_gmail(raw, gmail, gmail_folder, mark_as_seen=False)
+			# Sprawdź czy wiadomość już istnieje na Gmail (ochrona przed duplikacją przy restarcie)
+			msg_headers = BytesParser(policy=policy.default).parsebytes(raw)
+			message_id_raw = msg_headers.get("Message-ID", "").strip('<>')
+			if message_id_raw and _gmail_message_exists(gmail, message_id_raw, gmail_folder):
+				logger.warning("[%s] UID=%s już istnieje na Gmail — pomijam APPEND", name, uid)
+				success, message_id, was_appended = True, message_id_raw, False
+				skipped += 1
+			else:
+				success, message_id = append_to_gmail(raw, gmail, gmail_folder, mark_as_seen=False)
+				was_appended = success
 
 			if success:
-				copied += 1
-				logger.info("[%s] ✓ Wiadomość skopiowana na Gmail (Message-ID: %s)", name, message_id[:30] + "..." if len(message_id) > 30 else message_id)
+				if was_appended:
+					copied += 1
+					logger.info("[%s] ✓ Wiadomość skopiowana na Gmail (Message-ID: %s)", name, message_id[:30] + "..." if len(message_id) > 30 else message_id)
+
 				# Aplikuj etykiety jeśli są filtry
 				if labels or never_spam:
 					logger.info("[%s] Aplikowanie filtrów: etykiety=%s, never_spam=%s", name, labels, never_spam)
@@ -641,7 +668,7 @@ def _run_autoforward(source: IMAP4, gmail: IMAP4_SSL, acc: dict, folder: str) ->
 			failed += 1
 			logger.exception("[%s] Błąd przy przetwarzaniu wiadomości UID=%s", name, uid)
 
-	logger.info("[%s] Zakończono: skopiowano %d, błędy %d (łącznie %d)", name, copied, failed, len(uid_list))
+	logger.info("[%s] Zakończono: skopiowano %d, pominięto %d, błędy %d (łącznie %d)", name, copied, skipped, failed, len(uid_list))
 
 
 def _run_preview(server: IMAP4, acc: dict, folder: str, limit_override: Optional[int]) -> None:
