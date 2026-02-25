@@ -196,6 +196,13 @@ def parse_filters_from_config(filter_str: str) -> List[dict]:
 			value = parts[1].strip()
 			labels = [l.strip() for l in parts[2].split(',') if l.strip()]
 			never_spam = parts[3].strip().lower() == 'true' if len(parts) > 3 else False
+			is_regex = any(c in value for c in '.[](){}*+?^$|\\')
+			if is_regex:
+				try:
+					re.compile(value)
+				except re.error as e:
+					logger.warning("  ✗ Pominięto filtr — niepoprawny regex '%s': %s", value, e)
+					continue
 			filters.append({
 				'field': field,
 				'value': value,
@@ -249,28 +256,25 @@ def check_message_against_filters(raw_message: bytes, filters: List[dict]) -> tu
 			# Regex to tekst zawierający znaki specjalne: . * + ^ $ [ ] ( ) | \
 			is_regex = any(c in pattern for c in '.[](){}*+?^$|\\')
 			
-			try:
-				if is_regex:
-					logger.info("  Sprawdzanie: czy [%s] pasuje do regex '%s'?", field, pattern)
-					match = re.search(pattern, header_value, re.IGNORECASE)
-					if match:
-						labels_to_apply.update(filter_rule['labels'])
-						never_spam = never_spam or filter_rule['never_spam']
-						logger.info("  ✓ REGEX DOPASOWANY: '%s'! Dodaję etykiety: %s", match.group(), filter_rule['labels'])
-					else:
-						logger.info("  ✗ Regex nie pasuje")
+			if is_regex:
+				logger.info("  Sprawdzanie: czy [%s] pasuje do regex '%s'?", field, pattern)
+				match = re.search(pattern, header_value, re.IGNORECASE)
+				if match:
+					labels_to_apply.update(filter_rule['labels'])
+					never_spam = never_spam or filter_rule['never_spam']
+					logger.info("  ✓ REGEX DOPASOWANY: '%s'! Dodaję etykiety: %s", match.group(), filter_rule['labels'])
 				else:
-					value = pattern.lower()
-					header_lower = header_value.lower()
-					logger.info("  Sprawdzanie: czy [%s]='%s' zawiera '%s'?", field, header_lower[:50], value)
-					if value in header_lower:
-						labels_to_apply.update(filter_rule['labels'])
-						never_spam = never_spam or filter_rule['never_spam']
-						logger.info("  ✓ DOPASOWANO! Dodaję etykiety: %s, never_spam: %s", filter_rule['labels'], filter_rule['never_spam'])
-					else:
-						logger.info("  ✗ Nie pasuje")
-			except re.error as e:
-				logger.error("  ✗ Błąd w regex '%s': %s", pattern, e)
+					logger.info("  ✗ Regex nie pasuje")
+			else:
+				value = pattern.lower()
+				header_lower = header_value.lower()
+				logger.info("  Sprawdzanie: czy [%s]='%s' zawiera '%s'?", field, header_lower[:50], value)
+				if value in header_lower:
+					labels_to_apply.update(filter_rule['labels'])
+					never_spam = never_spam or filter_rule['never_spam']
+					logger.info("  ✓ DOPASOWANO! Dodaję etykiety: %s, never_spam: %s", filter_rule['labels'], filter_rule['never_spam'])
+				else:
+					logger.info("  ✗ Nie pasuje")
 		
 		if labels_to_apply or never_spam:
 			logger.info("Wynik sprawdzania: etykiety=%s, never_spam=%s", list(labels_to_apply), never_spam)
@@ -358,7 +362,7 @@ def append_to_gmail(raw_message: bytes, gmail_server: IMAP4_SSL, gmail_folder: s
 	"""
 	try:
 		msg = BytesParser(policy=policy.default).parsebytes(raw_message)
-		message_id = msg.get("Message-ID", "").strip('<>')
+		message_id = msg.get("Message-ID", "").strip().strip('<>').strip()
 		
 		date_str = msg.get("Date", "")
 		internal_date = None
@@ -631,7 +635,7 @@ def _run_autoforward(source: IMAP4, gmail: IMAP4_SSL, acc: dict, folder: str) ->
 
 			# Sprawdź czy wiadomość już istnieje na Gmail (ochrona przed duplikacją przy restarcie)
 			msg_headers = BytesParser(policy=policy.default).parsebytes(raw)
-			message_id_raw = msg_headers.get("Message-ID", "").strip('<>')
+			message_id_raw = msg_headers.get("Message-ID", "").strip().strip('<>').strip()
 			if message_id_raw and _gmail_message_exists(gmail, message_id_raw, gmail_folder):
 				logger.warning("[%s] UID=%s już istnieje na Gmail — pomijam APPEND", name, uid)
 				success, message_id, was_appended = True, message_id_raw, False
