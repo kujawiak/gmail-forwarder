@@ -136,26 +136,28 @@ def mark_as_read(server: IMAP4, uid: int, folder: str = "INBOX") -> bool:
 
 
 def fetch_message_info(server: IMAP4, uid: int, folder: str = "INBOX") -> dict:
-	"""Pobiera nagłówki i krótki podgląd treści wiadomości."""
+	"""Pobiera nagłówki i krótki podgląd treści wiadomości (bez pobierania załączników)."""
 	try:
-		raw = fetch_full_message(server, uid, folder)
-		if not raw:
+		server.select(folder, readonly=True)
+
+		# Pobierz tylko potrzebne nagłówki — bez treści i załączników
+		resp, data = server.uid("FETCH", str(uid), "(BODY.PEEK[HEADER.FIELDS (Subject From Date)])")
+		if resp != "OK" or not data or not isinstance(data[0], tuple):
 			return {"subject": "(błąd odczytu)", "from": "", "date": "", "preview": ""}
-		msg = BytesParser(policy=policy.default).parsebytes(raw)
+		msg = BytesParser(policy=policy.default).parsebytes(data[0][1])
+
+		# Pobierz pierwsze 2000 bajtów treści bez ustawiania flagi \Seen
 		preview = ""
-		if msg.is_multipart():
-			for part in msg.walk():
-				if part.get_content_type() == "text/plain":
-					try:
-						preview = part.get_content().strip()[:1000]
-					except Exception:
-						pass
-					break
-		else:
+		resp, text_data = server.uid("FETCH", str(uid), "(BODY.PEEK[TEXT]<0.2000>)")
+		if resp == "OK" and text_data and isinstance(text_data[0], tuple):
 			try:
-				preview = msg.get_content().strip()[:1000]
+				raw = text_data[0][1].decode("utf-8", errors="replace")
+				# Dla wiadomości multipart pomiń nagłówki części MIME (do pierwszej pustej linii)
+				sep = raw.find("\r\n\r\n")
+				preview = raw[sep + 4:].strip()[:1000] if sep != -1 else raw.strip()[:1000]
 			except Exception:
 				pass
+
 		return {
 			"subject": msg.get("Subject", "(brak tematu)"),
 			"from": msg.get("From", "(brak nadawcy)"),
