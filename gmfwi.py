@@ -98,13 +98,19 @@ def fetch_full_message(server: IMAP4, uid: int, folder: str = "INBOX") -> bytes:
 	return b""
 
 
+def _uid_store(server: IMAP4, uid: int, folder: str, op: str, flags: str) -> tuple:
+	"""Wybiera folder i wykonuje UID STORE na podanym UID."""
+	server.select(folder, readonly=False)
+	return server.uid("STORE", str(uid), op, flags)
+
+
 def move_to_trash(server: IMAP4, uid: int, source_folder: str = "INBOX", trash_folder: str = "Trash") -> bool:
 	"""Przenosi wiadomość do folderu Trash (przez UID COPY + UID STORE + EXPUNGE)."""
 	try:
 		server.select(source_folder, readonly=False)
 		resp, _ = server.uid("COPY", str(uid), trash_folder)
 		if resp == "OK":
-			resp, _ = server.uid("STORE", str(uid), "+FLAGS", "(\\Deleted)")
+			resp, _ = _uid_store(server, uid, source_folder, "+FLAGS", "(\\Deleted)")
 			if resp == "OK":
 				server.expunge()
 				logger.debug("Wiadomość UID=%s przeniesiona do %s", uid, trash_folder)
@@ -117,8 +123,7 @@ def move_to_trash(server: IMAP4, uid: int, source_folder: str = "INBOX", trash_f
 def mark_as_read(server: IMAP4, uid: int, folder: str = "INBOX") -> bool:
 	"""Oznacza wiadomość jako przeczytaną (flaga \\Seen)."""
 	try:
-		server.select(folder, readonly=False)
-		resp, _ = server.uid("STORE", str(uid), "+FLAGS", "(\\Seen)")
+		resp, _ = _uid_store(server, uid, folder, "+FLAGS", "(\\Seen)")
 		if resp == "OK":
 			logger.info("Wiadomość UID=%s oznaczona jako przeczytana", uid)
 			return True
@@ -167,11 +172,7 @@ def fetch_message_info(server: IMAP4, uid: int, folder: str = "INBOX") -> dict:
 
 def connect_gmail(gmail_user: str, gmail_password: str, timeout: int = 10) -> IMAP4_SSL:
 	"""Łączy się z Gmail przez IMAP SSL."""
-	logger.info("Łączenie z Gmail IMAP (%s)", gmail_user)
-	server = IMAP4_SSL(GMAIL_HOST, GMAIL_PORT, timeout=timeout)
-	server.login(gmail_user, gmail_password)
-	logger.info("Zalogowano do Gmail jako %s", gmail_user)
-	return server
+	return connect_imap(GMAIL_HOST, gmail_user, gmail_password, port=GMAIL_PORT, timeout=timeout)
 
 
 def parse_filters_from_config(filter_str: str) -> List[dict]:
@@ -458,61 +459,31 @@ def _kr_gmail_key(account_name: str, gmail_user: str) -> str:
 	return f"gmail:{account_name}:{gmail_user}"
 
 
-def get_stored_password(account_name: str, user: str, host: str) -> Optional[str]:
+def _kr_get(key: str) -> Optional[str]:
 	if not keyring:
 		return None
 	try:
-		return keyring.get_password(SERVICE_NAME, _kr_source_key(account_name, user, host))
+		return keyring.get_password(SERVICE_NAME, key)
 	except Exception:
 		return None
 
 
-def set_stored_password(account_name: str, user: str, host: str, password: str) -> bool:
+def _kr_set(key: str, pwd: str) -> bool:
 	if not keyring:
 		return False
 	try:
-		keyring.set_password(SERVICE_NAME, _kr_source_key(account_name, user, host), password)
+		keyring.set_password(SERVICE_NAME, key, pwd)
 		return True
 	except Exception:
-		logger.exception("Nie udało się zapisać hasła źródłowego dla %s", account_name)
+		logger.exception("Nie udało się zapisać hasła w keyring (key=%s)", key)
 		return False
 
 
-def delete_stored_password(account_name: str, user: str, host: str) -> bool:
+def _kr_del(key: str) -> bool:
 	if not keyring:
 		return False
 	try:
-		keyring.delete_password(SERVICE_NAME, _kr_source_key(account_name, user, host))
-		return True
-	except Exception:
-		return False
-
-
-def get_stored_gmail_password(account_name: str, gmail_user: str) -> Optional[str]:
-	if not keyring:
-		return None
-	try:
-		return keyring.get_password(SERVICE_NAME, _kr_gmail_key(account_name, gmail_user))
-	except Exception:
-		return None
-
-
-def set_stored_gmail_password(account_name: str, gmail_user: str, password: str) -> bool:
-	if not keyring:
-		return False
-	try:
-		keyring.set_password(SERVICE_NAME, _kr_gmail_key(account_name, gmail_user), password)
-		return True
-	except Exception:
-		logger.exception("Nie udało się zapisać hasła Gmail dla %s", account_name)
-		return False
-
-
-def delete_stored_gmail_password(account_name: str, gmail_user: str) -> bool:
-	if not keyring:
-		return False
-	try:
-		keyring.delete_password(SERVICE_NAME, _kr_gmail_key(account_name, gmail_user))
+		keyring.delete_password(SERVICE_NAME, key)
 		return True
 	except Exception:
 		return False
@@ -556,14 +527,14 @@ def main() -> None:
 
 		# --- obsługa usuwania haseł z keyring ---
 		if args.forget_password:
-			if delete_stored_password(name, user, host):
+			if _kr_del(_kr_source_key(name, user, host)):
 				logger.info("[%s] Usunięto hasło źródłowe z keyring.", name)
 		if args.forget_gmail_password:
-			if delete_stored_gmail_password(name, gmail_user):
+			if _kr_del(_kr_gmail_key(name, gmail_user)):
 				logger.info("[%s] Usunięto hasło Gmail z keyring.", name)
 
 		# --- hasło źródłowe: keyring → prompt ---
-		password = get_stored_password(name, user, host)
+		password = _kr_get(_kr_source_key(name, user, host))
 		if password:
 			logger.info("[%s] Użyto hasła źródłowego z keyring.", name)
 		else:
@@ -573,7 +544,7 @@ def main() -> None:
 				password = None
 
 		# --- hasło Gmail: keyring → prompt ---
-		gmail_password = get_stored_gmail_password(name, gmail_user)
+		gmail_password = _kr_get(_kr_gmail_key(name, gmail_user))
 		if gmail_password:
 			logger.info("[%s] Użyto hasła Gmail z keyring.", name)
 		else:
@@ -588,11 +559,11 @@ def main() -> None:
 			source_server = connect_imap(host, user, password, port=acc["port"], use_ssl=acc["ssl"])
 
 			if args.store_password and password:
-				if set_stored_password(name, user, host, password):
+				if _kr_set(_kr_source_key(name, user, host), password):
 					logger.info("[%s] Hasło źródłowe zapisane w keyring.", name)
 
 			if args.store_gmail_password and gmail_password:
-				if set_stored_gmail_password(name, gmail_user, gmail_password):
+				if _kr_set(_kr_gmail_key(name, gmail_user), gmail_password):
 					logger.info("[%s] Hasło Gmail zapisane w keyring.", name)
 
 			if args.autoforward:
@@ -629,7 +600,6 @@ def _run_autoforward(source: IMAP4, gmail: IMAP4_SSL, acc: dict, folder: str) ->
 
 	for uid in uid_list:
 		try:
-			logger.info("[%s] " + "="*60, name)
 			logger.info("[%s] Przetwarzanie wiadomości UID=%s", name, uid)
 			
 			raw = fetch_full_message(source, uid, folder)
