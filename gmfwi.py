@@ -305,7 +305,8 @@ def apply_gmail_labels(gmail_server: IMAP4_SSL, message_id: str, labels: List[st
 			for folder in folders_to_try:
 				try:
 					gmail_server.select(folder)
-					resp, data = gmail_server.uid('SEARCH', None, f'HEADER Message-ID "{message_id}"')
+					mid_escaped = message_id.replace('\\', '\\\\').replace('"', '\\"')
+					resp, data = gmail_server.uid('SEARCH', None, f'HEADER Message-ID "{mid_escaped}"')
 					if resp == "OK" and data[0]:
 						uid = data[0].split()[-1]  # ostatni UID (najnowszy)
 						break
@@ -390,7 +391,8 @@ def _gmail_message_exists(gmail_server: IMAP4_SSL, message_id: str, gmail_folder
 	for folder in folders:
 		try:
 			gmail_server.select(folder)
-			resp, data = gmail_server.uid('SEARCH', None, f'HEADER Message-ID "{message_id}"')
+			mid_escaped = message_id.replace('\\', '\\\\').replace('"', '\\"')
+			resp, data = gmail_server.uid('SEARCH', None, f'HEADER Message-ID "{mid_escaped}"')
 			if resp == "OK" and data[0]:
 				return True
 		except Exception:
