@@ -21,6 +21,7 @@ import getpass
 import imaplib
 import logging
 import os
+import re
 from email.parser import BytesParser
 from email import policy
 from email.utils import parsedate_to_datetime
@@ -191,7 +192,12 @@ def parse_filters_from_config(filter_str: str) -> List[dict]:
 
 
 def check_message_against_filters(raw_message: bytes, filters: List[dict]) -> tuple[List[str], bool]:
-	"""Sprawdza wiadomość względem filtrów i zwraca (etykiety, never_spam)."""
+	"""Sprawdza wiadomość względem filtrów i zwraca (etykiety, never_spam).
+	
+	Wartość filtru obsługuje:
+	- Prosty tekst (case-insensitive): 'gmail.com'
+	- Regex (automatycznie wykrywany jeśli zawiera znaki regex): '.*@facebookmail\\.com'
+	"""
 	labels_to_apply = set()
 	never_spam = False
 	
@@ -212,27 +218,44 @@ def check_message_against_filters(raw_message: bytes, filters: List[dict]) -> tu
 		
 		for filter_rule in filters:
 			field = filter_rule['field']
-			value = filter_rule['value'].lower()
+			pattern = filter_rule['value']
 			
 			# Pobierz wartość pola z wiadomości
 			if field == 'to':
-				header_value = msg_to.lower()
+				header_value = msg_to
 			elif field == 'from':
-				header_value = msg_from.lower()
+				header_value = msg_from
 			elif field == 'subject':
-				header_value = msg_subject.lower()
+				header_value = msg_subject
 			else:
 				continue
 			
-			logger.info("  Sprawdzanie: czy [%s]='%s' zawiera '%s'?", field, header_value[:50], value)
+			# Sprawdzenie czy pattern jest regex czy zwykły tekst
+			# Regex to tekst zawierający znaki specjalne: . * + ^ $ [ ] ( ) | \
+			is_regex = any(c in pattern for c in '.[](){}*+?^$|\\')
 			
-			# Sprawdź czy pasuje
-			if value in header_value:
-				labels_to_apply.update(filter_rule['labels'])
-				never_spam = never_spam or filter_rule['never_spam']
-				logger.info("  ✓ DOPASOWANO! Dodaję etykiety: %s, never_spam: %s", filter_rule['labels'], filter_rule['never_spam'])
-			else:
-				logger.info("  ✗ Nie pasuje")
+			try:
+				if is_regex:
+					logger.info("  Sprawdzanie: czy [%s] pasuje do regex '%s'?", field, pattern)
+					match = re.search(pattern, header_value, re.IGNORECASE)
+					if match:
+						labels_to_apply.update(filter_rule['labels'])
+						never_spam = never_spam or filter_rule['never_spam']
+						logger.info("  ✓ REGEX DOPASOWANY: '%s'! Dodaję etykiety: %s", match.group(), filter_rule['labels'])
+					else:
+						logger.info("  ✗ Regex nie pasuje")
+				else:
+					value = pattern.lower()
+					header_lower = header_value.lower()
+					logger.info("  Sprawdzanie: czy [%s]='%s' zawiera '%s'?", field, header_lower[:50], value)
+					if value in header_lower:
+						labels_to_apply.update(filter_rule['labels'])
+						never_spam = never_spam or filter_rule['never_spam']
+						logger.info("  ✓ DOPASOWANO! Dodaję etykiety: %s, never_spam: %s", filter_rule['labels'], filter_rule['never_spam'])
+					else:
+						logger.info("  ✗ Nie pasuje")
+			except re.error as e:
+				logger.error("  ✗ Błąd w regex '%s': %s", pattern, e)
 		
 		if labels_to_apply or never_spam:
 			logger.info("Wynik sprawdzania: etykiety=%s, never_spam=%s", list(labels_to_apply), never_spam)
