@@ -107,9 +107,12 @@ def move_to_trash(server: IMAP4, uid: int, source_folder: str = "INBOX", trash_f
 		if resp == "OK":
 			resp, _ = server.uid("STORE", str(uid), "+FLAGS", "(\\Deleted)")
 			if resp == "OK":
-				server.expunge()
-				logger.debug("Wiadomość UID=%s przeniesiona do %s", uid, trash_folder)
-				return True
+				exp_resp, _ = server.expunge()
+				if exp_resp == "OK":
+					logger.debug("Wiadomość UID=%s przeniesiona do %s", uid, trash_folder)
+					return True
+				else:
+					logger.warning("EXPUNGE dla UID=%s zwrócił: %s", uid, exp_resp)
 	except Exception as e:
 		logger.debug("Błąd przenoszenia wiadomości UID=%s: %s", uid, e)
 	return False
@@ -682,6 +685,8 @@ def _run_preview(server: IMAP4, acc: dict, folder: str, limit_override: Optional
 	uid_list = get_uid_list(server, folder)
 	total = len(uid_list)
 	limit = limit_override if limit_override is not None else acc["limit"]
+	if limit <= 0:
+		limit = 0
 	logger.info("[%s] Znaleziono %d wiadomości w folderze %s", name, total, folder)
 
 	for idx, uid in enumerate(uid_list[:limit], start=1):
