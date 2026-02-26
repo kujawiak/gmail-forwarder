@@ -625,6 +625,30 @@ def _kr_del(key: str) -> bool:
 
 
 # ---------------------------------------------------------------------------
+# list_gmail_folders
+# ---------------------------------------------------------------------------
+
+def list_gmail_folders(gmail_server: IMAP4_SSL) -> None:
+	"""Wyświetla listę folderów IMAP dostępnych na Gmail."""
+	resp, data = gmail_server.list()
+	if resp != "OK":
+		logger.warning("Nie udało się pobrać listy folderów: %s", resp)
+		return
+	folders = []
+	for item in data:
+		if not item:
+			continue
+		# Format odpowiedzi: b'(\\flags) "separator" "nazwa"' lub b'(\\flags) "separator" nazwa'
+		decoded = item.decode("utf-8", errors="replace")
+		m = re.match(r'\(.*?\) ".*?" (.+)$', decoded)
+		if m:
+			name = m.group(1).strip().strip('"')
+			folders.append(name)
+	for f in sorted(folders):
+		print(f)
+
+
+# ---------------------------------------------------------------------------
 # main
 # ---------------------------------------------------------------------------
 
@@ -638,6 +662,7 @@ def main() -> None:
 	parser.add_argument("--store-gmail-password", action="store_true", help="zapisz hasło Gmail (App Password) w keyring")
 	parser.add_argument("--forget-gmail-password", action="store_true", help="usuń hasło Gmail z keyring")
 	parser.add_argument("--autoforward", action="store_true", help="skopiuj wiadomości na Gmail i przenieś oryginały do Trash")
+	parser.add_argument("--list-gmail-folders", action="store_true", help="wyświetl listę folderów IMAP na Gmail i zakończ")
 	parser.add_argument("--folder", default="INBOX", help="folder źródłowy IMAP (domyślnie INBOX)")
 	args = parser.parse_args()
 
@@ -701,7 +726,11 @@ def main() -> None:
 				if _kr_set(_kr_gmail_key(name, gmail_user), gmail_password):
 					logger.info("[%s] Hasło Gmail zapisane w keyring.", name)
 
-			if args.autoforward:
+			if args.list_gmail_folders:
+				gmail_server = connect_gmail(gmail_user, gmail_password)
+				print(f"--- Foldery Gmail ({gmail_user}) ---")
+				list_gmail_folders(gmail_server)
+			elif args.autoforward:
 				gmail_server = connect_gmail(gmail_user, gmail_password)
 				_run_autoforward(source_server, gmail_server, acc, args.folder)
 			else:
