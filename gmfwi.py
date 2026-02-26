@@ -773,6 +773,20 @@ def _run_autoforward(source: IMAP4, gmail: IMAP4_SSL, acc: dict, folder: str) ->
 			# Sprawdź czy wiadomość już istnieje na Gmail (ochrona przed duplikacją przy restarcie)
 			msg_headers = BytesParser(policy=policy.default).parsebytes(raw)
 			message_id_raw = msg_headers.get("Message-ID", "").strip().strip('<>').strip()
+			# Odrzuć wiadomości z non-ASCII Message-ID (malformed nagłówek, typowy dla spamu)
+			if message_id_raw and not message_id_raw.isascii():
+				logger.warning("[%s] UID=%s — odrzucono: non-ASCII w Message-ID ('%s')",
+				               name, uid, message_id_raw)
+				mark_as_read(source, uid, folder)
+				if move_to_trash(source, uid, folder, spam_folder):
+					logger.info("[%s] ✓ UID=%s przeniesiony do %s (non-ASCII Message-ID)",
+					            name, uid, spam_folder)
+					skipped += 1
+				else:
+					logger.warning("[%s] ✗ Nie udało się przenieść UID=%s do %s", name, uid, spam_folder)
+					failed += 1
+				continue
+
 			if message_id_raw and _gmail_message_exists(gmail, message_id_raw, gmail_folder):
 				logger.warning("[%s] UID=%s już istnieje na Gmail — pomijam APPEND", name, uid)
 				success, message_id, was_appended = True, message_id_raw, False
