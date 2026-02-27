@@ -90,4 +90,9 @@ python gmfwi.py --config config.ini --account work --autoforward
 
 # Override the message preview limit
 python gmfwi.py --config config.ini --account work --limit 20
+
+# List all available IMAP folders on the Gmail account and exit
+python gmfwi.py --config config.ini --account work --list-gmail-folders
 ```
+
+Use `--list-gmail-folders` to discover the exact folder names accepted by `gmail_folder` in `config.ini` (e.g. `[Gmail]/Sent Mail`, `[Gmail]/All Mail`).
