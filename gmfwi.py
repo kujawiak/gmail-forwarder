@@ -806,7 +806,8 @@ def _run_autoforward(source: IMAP4, gmail: IMAP4_SSL, acc: dict, folder: str) ->
 			if message_id_raw and not message_id_raw.isascii():
 				logger.warning("[%s] UID=%s — odrzucono: non-ASCII w Message-ID ('%s')",
 				               name, uid, message_id_raw)
-				mark_as_read(source, uid, folder)
+				if mark_source_as_read:
+					mark_as_read(source, uid, folder)
 				if move_to_trash(source, uid, folder, spam_folder):
 					logger.info("[%s] ✓ UID=%s przeniesiony do %s (non-ASCII Message-ID)",
 					            name, uid, spam_folder)
@@ -847,6 +848,7 @@ def _run_autoforward(source: IMAP4, gmail: IMAP4_SSL, acc: dict, folder: str) ->
 					logger.info("[%s] ✓ Wiadomość UID=%s przeniesiona do %s", name, uid, trash_folder)
 				else:
 					logger.warning("[%s] ✗ Nie udało się przenieść wiadomości UID=%s do %s", name, uid, trash_folder)
+					failed += 1
 			else:
 				failed += 1
 				logger.warning("[%s] ✗ Nie udało się skopiować wiadomości UID=%s na Gmail", name, uid)
