@@ -266,14 +266,29 @@ def load_spam_keywords(filepath: str) -> List[str]:
 	return keywords
 
 
+def _html_has_trailing_content(html: str) -> bool:
+	"""Sprawdza czy HTML zawiera treść (URL-e lub znaczniki) po zamykającym </html>.
+
+	Spam często wkleja treść legalnego emaila jako body HTML, a własne linki
+	i obrazki trackingowe dopisuje po tagu zamykającym </html>. To silny wskaźnik spamu.
+	"""
+	m = re.search(r'</html\s*>', html, re.IGNORECASE)
+	if not m:
+		return False
+	trailing = html[m.end():].strip()
+	return bool(trailing and (
+		re.search(r'https?://', trailing, re.IGNORECASE) or
+		re.search(r'<[a-zA-Z]', trailing)
+	))
+
+
 def check_body_for_spam(raw_message: bytes, keywords: List[str]) -> tuple[bool, str]:
 	"""Sprawdza treść wiadomości pod kątem słów kluczowych spamu.
 
 	Przeszukuje wszystkie części text/plain i text/html.
+	Zawsze sprawdza strukturę HTML (treść po </html>) niezależnie od keywords.
 	Zwraca (True, dopasowane_wyrażenie) lub (False, "").
 	"""
-	if not keywords:
-		return (False, "")
 	try:
 		msg = BytesParser(policy=policy.default).parsebytes(raw_message)
 		body_text = ""
@@ -281,9 +296,15 @@ def check_body_for_spam(raw_message: bytes, keywords: List[str]) -> tuple[bool, 
 			ct = part.get_content_type()
 			if ct in ('text/plain', 'text/html'):
 				try:
-					body_text += part.get_content() or ""
+					content = part.get_content() or ""
+					body_text += content
+					# Treść po </html> to silny wskaźnik spamu — sprawdzaj zawsze
+					if ct == 'text/html' and _html_has_trailing_content(content):
+						return (True, "[treść po </html>]")
 				except Exception:
 					pass
+		if not keywords:
+			return (False, "")
 		body_lower = body_text.lower()
 		for kw in keywords:
 			is_regex = any(c in kw for c in '.[](){}*+?^$|\\')
