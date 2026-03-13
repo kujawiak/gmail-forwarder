@@ -282,6 +282,19 @@ def _html_has_trailing_content(html: str) -> bool:
 	))
 
 
+def _html_has_multiple_documents(html: str) -> bool:
+	"""Sprawdza czy w jednej części MIME text/html są osadzone dwa dokumenty HTML.
+
+	Spam osadza legalny szablon (Poczta Polska, InPost itp.) jako "przykrywkę",
+	a właściwą treść phishingową jako drugi dokument zaczynający się od <!DOCTYPE
+	lub <html>. Legitymne emaile nigdy nie mają dwóch dokumentów HTML w jednej części MIME.
+	"""
+	return (
+		len(re.findall(r'<!DOCTYPE\b', html, re.IGNORECASE)) > 1 or
+		len(re.findall(r'<html[\s>]', html, re.IGNORECASE)) > 1
+	)
+
+
 def check_body_for_spam(raw_message: bytes, keywords: List[str]) -> tuple[bool, str]:
 	"""Sprawdza treść wiadomości pod kątem słów kluczowych spamu.
 
@@ -298,9 +311,12 @@ def check_body_for_spam(raw_message: bytes, keywords: List[str]) -> tuple[bool, 
 				try:
 					content = part.get_content() or ""
 					body_text += content
-					# Treść po </html> to silny wskaźnik spamu — sprawdzaj zawsze
-					if ct == 'text/html' and _html_has_trailing_content(content):
-						return (True, "[treść po </html>]")
+					# Anomalie struktury HTML to silny wskaźnik spamu — sprawdzaj zawsze
+					if ct == 'text/html':
+						if _html_has_trailing_content(content):
+							return (True, "[treść po </html>]")
+						if _html_has_multiple_documents(content):
+							return (True, "[wiele dokumentów HTML w jednej części MIME]")
 				except Exception:
 					pass
 		if not keywords:
