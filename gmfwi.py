@@ -336,6 +336,23 @@ def check_body_for_spam(raw_message: bytes, keywords: List[str]) -> tuple[bool, 
 	return (False, "")
 
 
+def check_header_for_spam(raw_message: bytes) -> tuple[bool, str]:
+	"""Sprawdza nagłówki wiadomości pod kątem wskaźników spamu.
+
+	Sprawdza X-WP-DKIM-Status: bad — podpis DKIM weryfikowany przez serwer WP/tlen.pl
+	jest nieprawidłowy. Niemal zawsze oznacza spam (sfałszowany podpis lub zmodyfikowana treść).
+	Zwraca (True, opis) lub (False, "").
+	"""
+	try:
+		msg = BytesParser(policy=policy.default).parsebytes(raw_message)
+		dkim_status = msg.get("X-WP-DKIM-Status", "").lower()
+		if dkim_status.startswith("bad"):
+			return (True, f"X-WP-DKIM-Status: {msg.get('X-WP-DKIM-Status', '').strip()}")
+	except Exception:
+		logger.exception("Błąd podczas sprawdzania nagłówków wiadomości pod kątem spamu")
+	return (False, "")
+
+
 def message_has_attachments(raw_message: bytes) -> bool:
 	"""Sprawdza czy wiadomość zawiera załączniki."""
 	try:
@@ -821,8 +838,10 @@ def _run_autoforward(source: IMAP4, gmail: IMAP4_SSL, acc: dict, folder: str) ->
 			# Sprawdź filtry przed skopiowaniem
 			labels, never_spam = check_message_against_filters(raw, filters)
 
-			# Sprawdź spam po treści wiadomości — jeśli wykryty, usuń tylko ze źródła
-			is_spam, spam_match = check_body_for_spam(raw, spam_keywords)
+			# Sprawdź nagłówki pod kątem spamu (DKIM itp.), potem treść
+			is_spam, spam_match = check_header_for_spam(raw)
+			if not is_spam:
+				is_spam, spam_match = check_body_for_spam(raw, spam_keywords)
 			if is_spam:
 				logger.info("[%s] ⚠ Spam wykryty (pasuje: '%s') — usuwam ze źródła bez kopiowania na Gmail",
 				            name, spam_match)
