@@ -23,13 +23,8 @@ from email.message import EmailMessage
 
 import pytest
 
-from gmfwi import (
-    _kr_gmail_key,
-    _kr_source_key,
-    check_message_against_filters,
-    load_accounts,
-    parse_filters_from_config,
-)
+from filters import check_message_against_filters, check_spam, parse_filters_from_config
+from gmfwi import _kr_gmail_key, _kr_source_key, load_accounts
 
 
 # ---------------------------------------------------------------------------
@@ -247,6 +242,91 @@ class TestCheckMessageAgainstFilters:
         labels, never_spam = check_message_against_filters(raw, filters)
         assert labels == []
         assert never_spam is False
+
+
+# ---------------------------------------------------------------------------
+# check_spam
+# ---------------------------------------------------------------------------
+# Testujemy zunifikowane API spamowe — jedno wywołanie zamiast osobnych
+# check_header_for_spam + check_body_for_spam + inline checks.
+
+def _make_raw_email_with_headers(**extra_headers) -> bytes:
+    """Tworzy surowe bajty RFC822 z dodatkowymi nagłówkami."""
+    msg = EmailMessage()
+    msg["To"] = "user@example.com"
+    msg["From"] = "sender@example.com"
+    msg["Subject"] = "Test"
+    msg["Message-ID"] = "<test@example.com>"
+    for key, value in extra_headers.items():
+        msg[key] = value
+    msg.set_content("plain text")
+    return bytes(msg)
+
+
+class TestCheckSpam:
+
+    def test_clean_message_is_not_spam(self):
+        raw = make_raw_email(from_="boss@work.com", subject="Meeting")
+        is_spam, reason = check_spam(raw, [])
+        assert is_spam is False
+        assert reason == ""
+
+    def test_bad_dkim_detected(self):
+        raw = _make_raw_email_with_headers(**{"X-WP-DKIM-Status": "bad (testing)"})
+        is_spam, reason = check_spam(raw, [])
+        assert is_spam is True
+        assert "DKIM" in reason
+
+    def test_sender_domain_mismatch_detected(self):
+        msg = EmailMessage()
+        msg["To"] = "user@example.com"
+        msg["From"] = "legit@bank.com"
+        msg["Sender"] = "spammer@evil.com"
+        msg["Subject"] = "Test"
+        msg["Message-ID"] = "<test@example.com>"
+        msg.set_content("hello")
+        raw = bytes(msg)
+        is_spam, reason = check_spam(raw, [])
+        assert is_spam is True
+        assert "evil.com" in reason
+
+    def test_unicode_math_in_subject_detected(self):
+        # U+1D400 = Mathematical Bold Capital A (𝐀)
+        raw = make_raw_email(subject="Free \U0001D400 offer!")
+        is_spam, reason = check_spam(raw, [])
+        assert is_spam is True
+        assert "Unicode math" in reason
+
+    def test_non_ascii_message_id_detected(self):
+        # Biblioteka email nie pozwala na non-ASCII w Message-ID,
+        # więc budujemy surowe bajty ręcznie (symulacja malformed wiadomości)
+        raw = (
+            b"To: user@example.com\r\n"
+            b"From: sender@example.com\r\n"
+            b"Subject: Test\r\n"
+            b"Message-ID: <t\xc3\xabst@example.com>\r\n"
+            b"\r\n"
+            b"hello\r\n"
+        )
+        is_spam, reason = check_spam(raw, [])
+        assert is_spam is True
+        assert "non-ASCII Message-ID" in reason
+
+    def test_body_keyword_match(self):
+        raw = make_raw_email(body="Click here to claim your FREE PRIZE")
+        is_spam, reason = check_spam(raw, ["free prize"])
+        assert is_spam is True
+        assert reason == "free prize"
+
+    def test_body_keyword_no_match(self):
+        raw = make_raw_email(body="Meeting at 3pm")
+        is_spam, reason = check_spam(raw, ["free prize"])
+        assert is_spam is False
+
+    def test_body_regex_keyword_match(self):
+        raw = make_raw_email(body="Visit http://evil.example.com now!")
+        is_spam, reason = check_spam(raw, [r"http://evil\.example\.com"])
+        assert is_spam is True
 
 
 # ---------------------------------------------------------------------------

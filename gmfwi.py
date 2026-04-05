@@ -21,7 +21,6 @@ import getpass
 import imaplib
 import logging
 import os
-import re
 import sys
 import time
 from email.parser import BytesParser
@@ -29,6 +28,13 @@ from email import policy
 from email.utils import parsedate_to_datetime
 from imaplib import IMAP4, IMAP4_SSL
 from typing import List, Optional
+
+from filters import (
+	parse_filters_from_config,
+	load_spam_keywords,
+	check_message_against_filters,
+	check_spam,
+)
 
 try:
 	import keyring
@@ -188,46 +194,6 @@ def connect_gmail(gmail_user: str, gmail_password: str, timeout: int = 10) -> IM
 	return connect_imap(GMAIL_HOST, gmail_user, gmail_password, port=GMAIL_PORT, timeout=timeout)
 
 
-def parse_filters_from_config(filter_str: str) -> List[dict]:
-	"""Parsuje filtry z config.ini.
-	
-	Format: field:value:label1,label2:never_spam
-	Przykład: to:kuj4@o2.pl:kuj4@o2.pl:true
-	"""
-	filters = []
-	if not filter_str:
-		logger.info("Brak zdefiniowanych filtrów")
-		return filters
-	
-	logger.debug("Parsowanie filtrów z config: '%s'", filter_str[:100])
-	
-	for line in filter_str.strip().split('\n'):
-		line = line.strip()
-		if not line or line.startswith('#'):
-			continue
-		parts = line.split(':', 3)
-		if len(parts) >= 3:
-			field = parts[0].strip().lower()
-			value = parts[1].strip()
-			labels = [l.strip() for l in parts[2].split(',') if l.strip()]
-			never_spam = parts[3].strip().lower() == 'true' if len(parts) > 3 else False
-			is_regex = any(c in value for c in '.[](){}*+?^$|\\')
-			if is_regex:
-				try:
-					re.compile(value)
-				except re.error as e:
-					logger.warning("  ✗ Pominięto filtr — niepoprawny regex '%s': %s", value, e)
-					continue
-			filters.append({
-				'field': field,
-				'value': value,
-				'labels': labels,
-				'never_spam': never_spam
-			})
-			logger.info("  ✓ Filtr: [%s] zawiera '%s' → etykiety: %s, never_spam: %s", field, value, labels, never_spam)
-	return filters
-
-
 def _resolve_path(path: str, base_dir: str) -> str:
 	"""Zwraca ścieżkę bezwzględną; ścieżki względne rozwiązuje względem base_dir."""
 	if not path:
@@ -235,255 +201,6 @@ def _resolve_path(path: str, base_dir: str) -> str:
 	if os.path.isabs(path):
 		return path
 	return os.path.join(base_dir, path)
-
-
-def load_spam_keywords(filepath: str) -> List[str]:
-	"""Wczytuje słownik słów kluczowych/wyrażeń regularnych spamu z pliku.
-
-	Jeden wpis na linię; linie zaczynające się od '#' są komentarzami.
-	Zwraca pustą listę jeśli plik nie istnieje lub jest pusty.
-	"""
-	if not filepath:
-		return []
-	if not os.path.exists(filepath):
-		logger.warning("Plik spam_keywords_file nie istnieje: %s", filepath)
-		return []
-	keywords = []
-	with open(filepath, encoding="utf-8") as f:
-		for line in f:
-			line = line.strip()
-			if not line or line.startswith('#'):
-				continue
-			is_regex = any(c in line for c in '.[](){}*+?^$|\\')
-			if is_regex:
-				try:
-					re.compile(line)
-				except re.error as e:
-					logger.warning("  ✗ Pominięto spam keyword — niepoprawny regex '%s': %s", line, e)
-					continue
-			keywords.append(line)
-	logger.info("Wczytano %d spam keyword(s) z %s", len(keywords), filepath)
-	return keywords
-
-
-def _html_has_trailing_content(html: str) -> bool:
-	"""Sprawdza czy HTML zawiera treść (URL-e lub znaczniki) po zamykającym </html>.
-
-	Spam często wkleja treść legalnego emaila jako body HTML, a własne linki
-	i obrazki trackingowe dopisuje po tagu zamykającym </html>. To silny wskaźnik spamu.
-	"""
-	m = re.search(r'</html\s*>', html, re.IGNORECASE)
-	if not m:
-		return False
-	trailing = html[m.end():].strip()
-	return bool(trailing and (
-		re.search(r'https?://', trailing, re.IGNORECASE) or
-		re.search(r'<[a-zA-Z]', trailing)
-	))
-
-
-def _html_has_multiple_documents(html: str) -> bool:
-	"""Sprawdza czy w jednej części MIME text/html są osadzone dwa dokumenty HTML.
-
-	Spam osadza legalny szablon (Poczta Polska, InPost itp.) jako "przykrywkę",
-	a właściwą treść phishingową jako drugi dokument zaczynający się od <!DOCTYPE
-	lub <html>. Legitymne emaile nigdy nie mają dwóch dokumentów HTML w jednej części MIME.
-	"""
-	return (
-		len(re.findall(r'<!DOCTYPE\b', html, re.IGNORECASE)) > 1 or
-		len(re.findall(r'<html[\s>]', html, re.IGNORECASE)) > 1
-	)
-
-
-def check_body_for_spam(raw_message: bytes, keywords: List[str]) -> tuple[bool, str]:
-	"""Sprawdza treść wiadomości pod kątem słów kluczowych spamu.
-
-	Przeszukuje wszystkie części text/plain i text/html.
-	Zawsze sprawdza strukturę HTML (treść po </html>) niezależnie od keywords.
-	Zwraca (True, dopasowane_wyrażenie) lub (False, "").
-	"""
-	try:
-		msg = BytesParser(policy=policy.default).parsebytes(raw_message)
-		body_text = ""
-		for part in msg.walk():
-			ct = part.get_content_type()
-			if ct in ('text/plain', 'text/html'):
-				try:
-					content = part.get_content() or ""
-					body_text += content
-					# Anomalie struktury HTML to silny wskaźnik spamu — sprawdzaj zawsze
-					if ct == 'text/html':
-						if _html_has_trailing_content(content):
-							return (True, "[treść po </html>]")
-						if _html_has_multiple_documents(content):
-							return (True, "[wiele dokumentów HTML w jednej części MIME]")
-				except Exception:
-					pass
-		if not keywords:
-			return (False, "")
-		body_lower = body_text.lower()
-		for kw in keywords:
-			is_regex = any(c in kw for c in '.[](){}*+?^$|\\')
-			if is_regex:
-				m = re.search(kw, body_text, re.IGNORECASE)
-				if m:
-					return (True, m.group())
-			else:
-				if kw.lower() in body_lower:
-					return (True, kw)
-	except Exception:
-		logger.exception("Błąd podczas sprawdzania treści wiadomości pod kątem spamu")
-	return (False, "")
-
-
-def _extract_domain(addr: str) -> str:
-	"""Wyciąga domenę z adresu email (np. 'Foo <a@b.com>' -> 'b.com')."""
-	m = re.search(r'@([\w.-]+)', addr)
-	return m.group(1).lower() if m else ""
-
-
-def _subject_has_unicode_math(subject: str) -> bool:
-	"""Sprawdza czy Subject zawiera znaki Unicode Mathematical Alphanumeric Symbols.
-
-	Zakres U+1D400–U+1D7FF to litery bold/italic/script/fraktur/monospace używane
-	przez spamerów do omijania filtrów tekstowych. Legitymne maile ich nie stosują.
-	"""
-	for ch in subject:
-		if 0x1D400 <= ord(ch) <= 0x1D7FF:
-			return True
-	return False
-
-
-def check_header_for_spam(raw_message: bytes) -> tuple[bool, str]:
-	"""Sprawdza nagłówki wiadomości pod kątem wskaźników spamu.
-
-	Sprawdza:
-	- X-WP-DKIM-Status: bad — sfałszowany podpis DKIM
-	- Sender ≠ From (różne domeny) — nadawca podszywa się pod inną domenę
-	- Unicode Mathematical letters w Subject — technika omijania filtrów
-	Zwraca (True, opis) lub (False, "").
-	"""
-	try:
-		msg = BytesParser(policy=policy.default).parsebytes(raw_message)
-		dkim_status = msg.get("X-WP-DKIM-Status", "").lower()
-		if dkim_status.startswith("bad"):
-			return (True, f"X-WP-DKIM-Status: {msg.get('X-WP-DKIM-Status', '').strip()}")
-
-		# Sender vs From — różne domeny = ktoś podszywa się pod innego nadawcę
-		sender = msg.get("Sender", "")
-		from_addr = msg.get("From", "")
-		if sender:
-			sender_domain = _extract_domain(sender)
-			from_domain = _extract_domain(from_addr)
-			if sender_domain and from_domain and sender_domain != from_domain:
-				return (True, f"Sender domain '{sender_domain}' ≠ From domain '{from_domain}'")
-
-		# Unicode Mathematical Alphanumeric Symbols w Subject — technika spamerów
-		subject = msg.get("Subject", "")
-		if _subject_has_unicode_math(subject):
-			return (True, f"[Unicode math letters w Subject]")
-	except Exception:
-		logger.exception("Błąd podczas sprawdzania nagłówków wiadomości pod kątem spamu")
-	return (False, "")
-
-
-def message_has_attachments(raw_message: bytes) -> bool:
-	"""Sprawdza czy wiadomość zawiera załączniki."""
-	try:
-		msg = BytesParser(policy=policy.default).parsebytes(raw_message)
-		for part in msg.walk():
-			if part.get_filename():
-				return True
-			cd = part.get("Content-Disposition", "")
-			if cd.strip().lower().startswith("attachment"):
-				return True
-	except Exception:
-		pass
-	return False
-
-
-def check_message_against_filters(raw_message: bytes, filters: List[dict]) -> tuple[List[str], bool]:
-	"""Sprawdza wiadomość względem filtrów i zwraca (etykiety, never_spam).
-	
-	Wartość filtru obsługuje:
-	- Prosty tekst (case-insensitive): 'gmail.com'
-	- Regex (automatycznie wykrywany jeśli zawiera znaki regex): '.*@facebookmail\\.com'
-	"""
-	labels_to_apply = set()
-	never_spam = False
-	
-	if not filters:
-		logger.debug("Brak filtrów do sprawdzenia")
-		return ([], False)
-	
-	try:
-		msg = BytesParser(policy=policy.default).parsebytes(raw_message)
-		msg_to = msg.get('To', '')
-		msg_from = msg.get('From', '')
-		msg_subject = msg.get('Subject', '')
-		
-		logger.debug("Sprawdzanie filtrów dla wiadomości:")
-		logger.debug("  To: %s", msg_to)
-		logger.debug("  From: %s", msg_from)
-		logger.debug("  Subject: %s", msg_subject)
-		
-		for filter_rule in filters:
-			field = filter_rule['field']
-			pattern = filter_rule['value']
-			
-			# Pobierz wartość pola z wiadomości
-			if field == 'attach':
-				# Wartość pola jest ignorowana — filtr pasuje gdy wiadomość ma dowolny załącznik
-				if message_has_attachments(raw_message):
-					labels_to_apply.update(filter_rule['labels'])
-					never_spam = never_spam or filter_rule['never_spam']
-					logger.info("  ✓ DOPASOWANO! Wiadomość ma załączniki. Dodaję etykiety: %s",
-					            filter_rule['labels'])
-				else:
-					logger.debug("  ✗ Nie pasuje (brak załączników)")
-				continue  # pomiń dalszą logikę pattern-matching
-			elif field == 'to':
-				header_value = msg_to
-			elif field == 'from':
-				header_value = msg_from
-			elif field == 'subject':
-				header_value = msg_subject
-			else:
-				continue
-			
-			# Sprawdzenie czy pattern jest regex czy zwykły tekst
-			# Regex to tekst zawierający znaki specjalne: . * + ^ $ [ ] ( ) | \
-			is_regex = any(c in pattern for c in '.[](){}*+?^$|\\')
-			
-			if is_regex:
-				logger.debug("  Sprawdzanie: czy [%s] pasuje do regex '%s'?", field, pattern)
-				match = re.search(pattern, header_value, re.IGNORECASE)
-				if match:
-					labels_to_apply.update(filter_rule['labels'])
-					never_spam = never_spam or filter_rule['never_spam']
-					logger.info("  ✓ REGEX DOPASOWANY: '%s'! Dodaję etykiety: %s", match.group(), filter_rule['labels'])
-				else:
-					logger.debug("  ✗ Regex nie pasuje")
-			else:
-				value = pattern.lower()
-				header_lower = header_value.lower()
-				logger.debug("  Sprawdzanie: czy [%s]='%s' zawiera '%s'?", field, header_lower[:50], value)
-				if value in header_lower:
-					labels_to_apply.update(filter_rule['labels'])
-					never_spam = never_spam or filter_rule['never_spam']
-					logger.info("  ✓ DOPASOWANO! Dodaję etykiety: %s, never_spam: %s", filter_rule['labels'], filter_rule['never_spam'])
-				else:
-					logger.debug("  ✗ Nie pasuje")
-		
-		if labels_to_apply or never_spam:
-			logger.info("Wynik sprawdzania: etykiety=%s, never_spam=%s", list(labels_to_apply), never_spam)
-		else:
-			logger.debug("Żaden filtr nie pasuje do tej wiadomości")
-		
-		return (list(labels_to_apply), never_spam)
-	except Exception:
-		logger.exception("Błąd podczas sprawdzania filtrów")
-		return ([], False)
 
 
 def apply_gmail_labels(gmail_server: IMAP4_SSL, message_id: str, labels: List[str],
@@ -872,10 +589,8 @@ def _run_autoforward(source: IMAP4, gmail: IMAP4_SSL, acc: dict, folder: str) ->
 			# Sprawdź filtry przed skopiowaniem
 			labels, never_spam = check_message_against_filters(raw, filters)
 
-			# Sprawdź nagłówki pod kątem spamu (DKIM itp.), potem treść
-			is_spam, spam_match = check_header_for_spam(raw)
-			if not is_spam:
-				is_spam, spam_match = check_body_for_spam(raw, spam_keywords)
+			# Sprawdź wszystkie heurystyki spamu (DKIM, domain mismatch, Unicode math, non-ASCII Message-ID, HTML anomalie, keywords)
+			is_spam, spam_match = check_spam(raw, spam_keywords)
 			if is_spam:
 				logger.info("[%s] ⚠ Spam wykryty (pasuje: '%s') — usuwam ze źródła bez kopiowania na Gmail",
 				            name, spam_match)
@@ -892,20 +607,6 @@ def _run_autoforward(source: IMAP4, gmail: IMAP4_SSL, acc: dict, folder: str) ->
 			# Sprawdź czy wiadomość już istnieje na Gmail (ochrona przed duplikacją przy restarcie)
 			msg_headers = BytesParser(policy=policy.default).parsebytes(raw)
 			message_id_raw = msg_headers.get("Message-ID", "").strip().strip('<>').strip()
-			# Odrzuć wiadomości z non-ASCII Message-ID (malformed nagłówek, typowy dla spamu)
-			if message_id_raw and not message_id_raw.isascii():
-				logger.warning("[%s] UID=%s — odrzucono: non-ASCII w Message-ID ('%s')",
-				               name, uid, message_id_raw)
-				if mark_source_as_read:
-					mark_as_read(source, uid, folder)
-				if move_to_trash(source, uid, folder, spam_folder):
-					logger.info("[%s] ✓ UID=%s przeniesiony do %s (non-ASCII Message-ID)",
-					            name, uid, spam_folder)
-					skipped += 1
-				else:
-					logger.warning("[%s] ✗ Nie udało się przenieść UID=%s do %s", name, uid, spam_folder)
-					failed += 1
-				continue
 
 			if message_id_raw and _gmail_message_exists(gmail, message_id_raw, gmail_folder):
 				logger.warning("[%s] UID=%s już istnieje na Gmail — pomijam APPEND", name, uid)
