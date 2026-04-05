@@ -3,6 +3,7 @@ config.ini
 CLAUDE.md
 .claude/*
 spam*.txt
+*examples*/
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

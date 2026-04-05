@@ -336,11 +336,31 @@ def check_body_for_spam(raw_message: bytes, keywords: List[str]) -> tuple[bool, 
 	return (False, "")
 
 
+def _extract_domain(addr: str) -> str:
+	"""Wyciąga domenę z adresu email (np. 'Foo <a@b.com>' -> 'b.com')."""
+	m = re.search(r'@([\w.-]+)', addr)
+	return m.group(1).lower() if m else ""
+
+
+def _subject_has_unicode_math(subject: str) -> bool:
+	"""Sprawdza czy Subject zawiera znaki Unicode Mathematical Alphanumeric Symbols.
+
+	Zakres U+1D400–U+1D7FF to litery bold/italic/script/fraktur/monospace używane
+	przez spamerów do omijania filtrów tekstowych. Legitymne maile ich nie stosują.
+	"""
+	for ch in subject:
+		if 0x1D400 <= ord(ch) <= 0x1D7FF:
+			return True
+	return False
+
+
 def check_header_for_spam(raw_message: bytes) -> tuple[bool, str]:
 	"""Sprawdza nagłówki wiadomości pod kątem wskaźników spamu.
 
-	Sprawdza X-WP-DKIM-Status: bad — podpis DKIM weryfikowany przez serwer WP/tlen.pl
-	jest nieprawidłowy. Niemal zawsze oznacza spam (sfałszowany podpis lub zmodyfikowana treść).
+	Sprawdza:
+	- X-WP-DKIM-Status: bad — sfałszowany podpis DKIM
+	- Sender ≠ From (różne domeny) — nadawca podszywa się pod inną domenę
+	- Unicode Mathematical letters w Subject — technika omijania filtrów
 	Zwraca (True, opis) lub (False, "").
 	"""
 	try:
@@ -348,6 +368,20 @@ def check_header_for_spam(raw_message: bytes) -> tuple[bool, str]:
 		dkim_status = msg.get("X-WP-DKIM-Status", "").lower()
 		if dkim_status.startswith("bad"):
 			return (True, f"X-WP-DKIM-Status: {msg.get('X-WP-DKIM-Status', '').strip()}")
+
+		# Sender vs From — różne domeny = ktoś podszywa się pod innego nadawcę
+		sender = msg.get("Sender", "")
+		from_addr = msg.get("From", "")
+		if sender:
+			sender_domain = _extract_domain(sender)
+			from_domain = _extract_domain(from_addr)
+			if sender_domain and from_domain and sender_domain != from_domain:
+				return (True, f"Sender domain '{sender_domain}' ≠ From domain '{from_domain}'")
+
+		# Unicode Mathematical Alphanumeric Symbols w Subject — technika spamerów
+		subject = msg.get("Subject", "")
+		if _subject_has_unicode_math(subject):
+			return (True, f"[Unicode math letters w Subject]")
 	except Exception:
 		logger.exception("Błąd podczas sprawdzania nagłówków wiadomości pod kątem spamu")
 	return (False, "")
